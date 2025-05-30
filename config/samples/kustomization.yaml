@@ -1,0 +1,4 @@
+## Append samples of your project ##
+resources:
+- kessel_v1_syncconfig.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

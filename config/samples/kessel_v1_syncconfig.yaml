@@ -1,0 +1,9 @@
+apiVersion: kessel.project-kessel.org/v1
+kind: SyncConfig
+metadata:
+  labels:
+    app.kubernetes.io/name: kube-kessel-sync
+    app.kubernetes.io/managed-by: kustomize
+  name: syncconfig-sample
+spec:
+  # TODO(user): Add fields here
