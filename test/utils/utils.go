@@ -171,6 +171,50 @@ func LoadImageToKindClusterWithName(name string) error {
 	if v, ok := os.LookupEnv("KIND_CLUSTER"); ok {
 		cluster = v
 	}
+
+	containerTool := os.Getenv("CONTAINER_TOOL")
+	var loader func(string, string) error
+
+	switch containerTool {
+	case "podman":
+		loader = loadImageWithPodman
+	default:
+		loader = loadImageWithDocker
+	}
+
+	return loader(name, cluster)
+}
+
+// With podman, we cannot import the image directly into kind, it must be an archive first.
+// See: 
+// - https://github.com/podman-desktop/podman-desktop/blob/deec1eda430c384d516ae6455a717e09c8dc9d96/extensions/kind/src/image-handler.ts
+// - https://github.com/kubernetes-sigs/kind/issues/2027
+func loadImageWithPodman(name, cluster string) error {
+	// Create a temp file for the image archive
+	tmpFile, err := os.CreateTemp("", "image-archive-*.tar")
+	if err != nil {
+		return fmt.Errorf("failed to create temp file for image archive: %w", err)
+	}
+	archivePath := tmpFile.Name()
+	tmpFile.Close()
+	defer os.Remove(archivePath)
+
+	// Save the image as an archive
+	saveCmd := exec.Command("podman", "save", "-o", archivePath, name)
+	if _, err := Run(saveCmd); err != nil {
+		return fmt.Errorf("failed to save image with podman: %w", err)
+	}
+	
+	// Load the image archive into kind
+	kindOptions := []string{"load", "image-archive", archivePath, "--name", cluster}
+	loadCmd := exec.Command("kind", kindOptions...)
+	if _, err := Run(loadCmd); err != nil {
+		return fmt.Errorf("failed to load image archive into kind: %w", err)
+	}
+	return nil
+}
+
+func loadImageWithDocker(name, cluster string) error {
 	kindOptions := []string{"load", "docker-image", name, "--name", cluster}
 	cmd := exec.Command("kind", kindOptions...)
 	_, err := Run(cmd)
