@@ -173,7 +173,7 @@ func LoadImageToKindClusterWithName(name string) error {
 	}
 
 	containerTool := os.Getenv("CONTAINER_TOOL")
-	var loader func(string, string) error
+	var loader func(name, cluster string) error
 
 	switch containerTool {
 	case "podman":
@@ -186,7 +186,7 @@ func LoadImageToKindClusterWithName(name string) error {
 }
 
 // With podman, we cannot import the image directly into kind, it must be an archive first.
-// See: 
+// See:
 // - https://github.com/podman-desktop/podman-desktop/blob/deec1eda430c384d516ae6455a717e09c8dc9d96/extensions/kind/src/image-handler.ts
 // - https://github.com/kubernetes-sigs/kind/issues/2027
 func loadImageWithPodman(name, cluster string) error {
@@ -204,7 +204,7 @@ func loadImageWithPodman(name, cluster string) error {
 	if _, err := Run(saveCmd); err != nil {
 		return fmt.Errorf("failed to save image with podman: %w", err)
 	}
-	
+
 	// Load the image archive into kind
 	kindOptions := []string{"load", "image-archive", archivePath, "--name", cluster}
 	loadCmd := exec.Command("kind", kindOptions...)
