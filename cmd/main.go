@@ -24,6 +24,8 @@ import (
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
 	"k8s.io/apimachinery/pkg/runtime"
@@ -37,8 +39,11 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
+	spicedb "github.com/authzed/authzed-go/v1" // Import the SpiceDB client package
+	"github.com/authzed/grpcutil"
 	kesselv1 "github.com/project-kessel/kube-kessel-sync/api/v1"
 	"github.com/project-kessel/kube-kessel-sync/internal/controller"
+	"github.com/project-kessel/kube-kessel-sync/internal/mapper"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -209,9 +214,26 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "SyncConfig")
 		os.Exit(1)
 	}
+
+	spiceDb, err := spicedb.NewClient(
+		// TODO: spicedb running somewhere
+		"localhost:50051",
+		grpcutil.WithInsecureBearerToken("your-bearer-token"),
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		return
+	}
+
+	kubeRbac2Ksl := &mapper.KubeRbacToKessel{
+		Kube:    mgr.GetClient(),
+		SpiceDb: spiceDb,
+	}
+
 	if err := (&controller.KesselSyncReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
+		Sink:   mapper.NewInMemoryKesselSink(kubeRbac2Ksl),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "KesselSync")
 		os.Exit(1)

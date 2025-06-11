@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 
+	sink "github.com/project-kessel/kube-kessel-sync/internal/sink"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -36,6 +37,7 @@ type KesselSyncReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	lastData map[types.UID]client.Object
+	Sink     sink.KubeObjectSink
 }
 
 func (r *KesselSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -107,13 +109,13 @@ func (r *KesselSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	// Post all created objects
 	for _, obj := range created {
-		postCreateObject(ctx, obj)
+		r.Sink.ObjectAddedOrChanged(ctx, obj)
 	}
 
 	// Remove objects that are no longer present
 	for uid, obj := range r.lastData {
 		if !foundUids[uid] {
-			if err := postDeleteObject(ctx, obj); err != nil {
+			if err := r.Sink.ObjectDeleted(ctx, obj); err != nil {
 				// Log the error but keep trying
 				log.Error(err, "Failed to post delete object")
 			} else {
@@ -126,25 +128,21 @@ func (r *KesselSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	return ctrl.Result{}, nil
 }
 
-func postCreateObject(ctx context.Context, obj client.Object) error {
+func (r *KesselSyncReconciler) WhatChanged(ctx context.Context, obj client.Object) (client.Object, client.Object, error) {
 	log := logf.FromContext(ctx)
 
-	name := obj.GetName()
-	namespace := obj.GetNamespace()
-	kind := obj.GetObjectKind().GroupVersionKind().Kind
-	log.Info("POST", "objectKind", kind, "objectNamespace", namespace, "objectName", name)
+	// Naive implementation of diffing just returns the old object
+	// Essentially says, "everything was removed, and this is new"
+	// It at least helps us be able to see what was there before.
 
-	return nil
-}
+	// Check if the object is already in lastData
+	if existingObj, found := r.lastData[obj.GetUID()]; found {
+		log.Info("Object found in lastData", "kind", obj.GetObjectKind().GroupVersionKind().Kind, "name", obj.GetName())
+		return existingObj, obj, nil
+	}
 
-func postDeleteObject(ctx context.Context, obj client.Object) error {
-	log := logf.FromContext(ctx)
-
-	name := obj.GetName()
-	namespace := obj.GetNamespace()
-	kind := obj.GetObjectKind().GroupVersionKind().Kind
-	log.Info("DELETE", "objectKind", kind, "objectNamespace", namespace, "objectName", name)
-	return nil
+	log.Info("Object not found in lastData, treating as new", "kind", obj.GetObjectKind().GroupVersionKind().Kind, "name", obj.GetName())
+	return nil, obj, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.

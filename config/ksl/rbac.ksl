@@ -1,0 +1,60 @@
+version 0.1
+namespace rbac
+
+public type principal {} //public for now since the [bool] type requires rbac/principal to be accessible
+
+// Other types for structuring access are marked internal but can be made public if services are intended to relate to them
+internal type platform {
+    relation binding: [Any role_binding]
+}
+
+internal type tenant {
+    relation platform: [ExactlyOne platform]
+    relation binding: [Any role_binding]
+}
+
+internal type group {
+    relation owner: [ExactlyOne tenant]
+    relation member: [Any principal or group.member]
+}
+
+internal type role {
+    private relation all_all_all: [bool]
+    private relation child: [Any role]
+}
+
+public type role_binding { // TODO: revisit cardinality based on clamping decisions
+    relation subject: [Any principal or group.member]
+    relation role: [Any role]
+}
+
+public type workspace { //Workspace is public so services can place resources into workspaces
+    relation parent: [ExactlyOne workspace or tenant]
+    relation binding: [Any role_binding]
+}
+
+// Adds a permission that is assignable to a role, and can be checked at the workspace level.
+public extension add_v2_permission(app, resource, verb) {
+    type role {
+        allow_duplicates private relation `${app}_all_all`: [bool]
+        allow_duplicates private relation `${app}_${resource}_all`: [bool]
+        allow_duplicates private relation `${app}_all_${verb}`: [bool]
+        allow_duplicates private relation `${app}_${resource}_${verb}`: [bool] or `${app}_${resource}_all` or `${app}_all_${verb}` or `${app}_all_all` or all_all_all or child.`${app}_${resource}_${verb}`
+    }
+
+    type role_binding {
+        relation `${app}_${resource}_${verb}`: subject and role.`${app}_${resource}_${verb}`
+    }
+
+    type platform {
+        relation `${app}_${resource}_${verb}`: binding.`${app}_${resource}_${verb}`
+    }
+
+    type tenant {
+        relation `${app}_${resource}_${verb}`: binding.`${app}_${resource}_${verb}` or platform.`${app}_${resource}_${verb}`
+    }
+
+    type workspace {
+        relation `${app}_${resource}_${verb}`: binding.`${app}_${resource}_${verb}` or parent.`${app}_${resource}_${verb}`
+    }
+}

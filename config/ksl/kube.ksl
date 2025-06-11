@@ -1,0 +1,29 @@
+version 0.1
+namespace kubernetes
+
+import rbac
+
+// This would be templated using ksl intermediate representation based on kinds deployed
+@rbac.add_v2_permission(app:'kubernetes', resource:'pod', verb:'get')
+@rbac.add_v2_permission(app:'kubernetes', resource:'configmap', verb:'get')
+type cluster {
+    relation workspace: [ExactlyOne rbac.workspace]
+    relation role_binding: [Any rbac.role_binding]
+
+    relation pod_get: role_binding.kubernetes_pod_get or workspace.kubernetes_pod_get
+    relation configmap_get: role_binding.kubernetes_pod_get or workspace.kubernetes_pod_get
+}
+
+type knamespace {
+    relation workspace: [ExactlyOne rbac.workspace]
+    relation role_binding: [Any rbac.role_binding]
+    relation cluster: [ExactlyOne cluster]
+
+    relation pod_get: role_binding.kubernetes_pod_get or workspace.kubernetes_pod_get or cluster.pod_get
+    relation configmap_get: role_binding.kubernetes_configmap_get or workspace.kubernetes_configmap_get or cluster.configmap_get
+}
+
+// Simulate at attribute which tracks the role bindings
+type role_binding {
+    relation rbac_binding: [Any rbac.role_binding]
+}

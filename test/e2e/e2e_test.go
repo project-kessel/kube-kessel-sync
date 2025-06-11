@@ -95,16 +95,16 @@ var _ = Describe("Manager", Ordered, func() {
 	// and pod descriptions for debugging.
 	AfterEach(func() {
 		specReport := CurrentSpecReport()
-		if specReport.Failed() {
-			By("Fetching controller manager pod logs")
-			cmd := exec.Command("kubectl", "logs", controllerPodName, "-n", namespace)
-			controllerLogs, err := utils.Run(cmd)
-			if err == nil {
-				_, _ = fmt.Fprintf(GinkgoWriter, "Controller logs:\n %s", controllerLogs)
-			} else {
-				_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get Controller logs: %s", err)
-			}
+		By("Fetching controller manager pod logs")
+		cmd := exec.Command("kubectl", "logs", controllerPodName, "-n", namespace)
+		controllerLogs, err := utils.Run(cmd)
+		if err == nil {
+			_, _ = fmt.Fprintf(GinkgoWriter, "Controller logs:\n %s", controllerLogs)
+		} else {
+			_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get Controller logs: %s", err)
+		}
 
+		if specReport.Failed() {
 			By("Fetching Kubernetes events")
 			cmd = exec.Command("kubectl", "get", "events", "-n", namespace, "--sort-by=.lastTimestamp")
 			eventsOutput, err := utils.Run(cmd)

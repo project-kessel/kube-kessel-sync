@@ -1,0 +1,86 @@
+definition kubernetes/cluster {
+	permission configmap_get = t_role_binding->kubernetes_pod_get + t_workspace->kubernetes_pod_get
+	permission pod_get = t_role_binding->kubernetes_pod_get + t_workspace->kubernetes_pod_get
+	permission role_binding = t_role_binding
+	relation t_role_binding: rbac/role_binding
+	permission workspace = t_workspace
+	relation t_workspace: rbac/workspace
+}
+
+definition kubernetes/knamespace {
+	permission cluster = t_cluster
+	relation t_cluster: kubernetes/cluster
+	permission configmap_get = t_role_binding->kubernetes_configmap_get + t_workspace->kubernetes_configmap_get + t_cluster->configmap_get
+	permission pod_get = t_role_binding->kubernetes_pod_get + t_workspace->kubernetes_pod_get + t_cluster->pod_get
+	permission role_binding = t_role_binding
+	relation t_role_binding: rbac/role_binding
+	permission workspace = t_workspace
+	relation t_workspace: rbac/workspace
+}
+
+definition kubernetes/role_binding {
+	permission rbac_binding = t_rbac_binding
+	relation t_rbac_binding: rbac/role_binding
+}
+
+definition rbac/group {
+	permission member = t_member
+	relation t_member: rbac/principal | rbac/group#member
+	permission owner = t_owner
+	relation t_owner: rbac/tenant
+}
+
+definition rbac/platform {
+	permission binding = t_binding
+	relation t_binding: rbac/role_binding
+	permission kubernetes_configmap_get = t_binding->kubernetes_configmap_get
+	permission kubernetes_pod_get = t_binding->kubernetes_pod_get
+}
+
+definition rbac/principal {}
+
+definition rbac/role {
+	permission all_all_all = t_all_all_all
+	relation t_all_all_all: rbac/principal:*
+	permission child = t_child
+	relation t_child: rbac/role
+	permission kubernetes_all_all = t_kubernetes_all_all
+	relation t_kubernetes_all_all: rbac/principal:*
+	permission kubernetes_all_get = t_kubernetes_all_get
+	relation t_kubernetes_all_get: rbac/principal:*
+	permission kubernetes_configmap_all = t_kubernetes_configmap_all
+	relation t_kubernetes_configmap_all: rbac/principal:*
+	permission kubernetes_configmap_get = t_kubernetes_configmap_get + kubernetes_configmap_all + kubernetes_all_get + kubernetes_all_all + all_all_all + t_child->kubernetes_configmap_get
+	relation t_kubernetes_configmap_get: rbac/principal:*
+	permission kubernetes_pod_all = t_kubernetes_pod_all
+	relation t_kubernetes_pod_all: rbac/principal:*
+	permission kubernetes_pod_get = t_kubernetes_pod_get + kubernetes_pod_all + kubernetes_all_get + kubernetes_all_all + all_all_all + t_child->kubernetes_pod_get
+	relation t_kubernetes_pod_get: rbac/principal:*
+}
+
+definition rbac/role_binding {
+	permission kubernetes_configmap_get = (subject & t_role->kubernetes_configmap_get)
+	permission kubernetes_pod_get = (subject & t_role->kubernetes_pod_get)
+	permission role = t_role
+	relation t_role: rbac/role
+	permission subject = t_subject
+	relation t_subject: rbac/principal | rbac/group#member
+}
+
+definition rbac/tenant {
+	permission binding = t_binding
+	relation t_binding: rbac/role_binding
+	permission kubernetes_configmap_get = t_binding->kubernetes_configmap_get + t_platform->kubernetes_configmap_get
+	permission kubernetes_pod_get = t_binding->kubernetes_pod_get + t_platform->kubernetes_pod_get
+	permission platform = t_platform
+	relation t_platform: rbac/platform
+}
+
+definition rbac/workspace {
+	permission binding = t_binding
+	relation t_binding: rbac/role_binding
+	permission kubernetes_configmap_get = t_binding->kubernetes_configmap_get + t_parent->kubernetes_configmap_get
+	permission kubernetes_pod_get = t_binding->kubernetes_pod_get + t_parent->kubernetes_pod_get
+	permission parent = t_parent
+	relation t_parent: rbac/workspace | rbac/tenant
+}

@@ -106,6 +106,10 @@ build: manifests generate fmt vet ## Build manager binary.
 run: manifests generate fmt vet ## Run a controller from your host.
 	go run ./cmd/main.go
 
+.PHONY: build-schema
+build-schema:
+	$(KSL) -o config/ksl/schema.zed config/ksl/kube.ksl config/ksl/rbac.ksl
+
 # If you wish to build the manager image targeting other platforms you can use the --platform flag.
 # (i.e. docker build --platform linux/arm64). However, you must enable docker buildKit for it.
 # More info: https://docs.docker.com/develop/develop-images/build_enhancements/
@@ -177,6 +181,7 @@ KUSTOMIZE ?= $(LOCALBIN)/kustomize
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
+KSL ?= ksl
 
 ## Tool Versions
 KUSTOMIZE_VERSION ?= v5.6.0
