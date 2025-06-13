@@ -226,8 +226,10 @@ func main() {
 	}
 
 	kubeRbac2Ksl := &mapper.KubeRbacToKessel{
-		Kube:    mgr.GetClient(),
-		SpiceDb: spiceDb,
+		ClusterId:    "default-cluster", // TODO: make this configurable
+		Kube:         mgr.GetClient(),
+		SpiceDb:      spiceDb,
+		SchemaSource: &mapper.FileSchemaSource{}, // Uses default path "config/ksl/schema.zed"
 	}
 
 	if err := (&controller.KesselSyncReconciler{

@@ -21,7 +21,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"os"
 
 	spicedbv1 "github.com/authzed/authzed-go/proto/authzed/api/v1"
@@ -40,12 +39,33 @@ var fullyConsistent = &spicedbv1.Consistency{
 	Requirement: &spicedbv1.Consistency_FullyConsistent{},
 }
 
+// FileSchemaSource loads schema from a file on disk
+// If FilePath is empty, uses the default path "config/ksl/schema.zed"
+type FileSchemaSource struct {
+	FilePath string
+}
+
+// Returns the schema as a string from the file specified in FilePath.
+// If FilePath is empty, it defaults to "config/ksl/schema.zed".
+func (f *FileSchemaSource) GetSchema(ctx context.Context) (string, error) {
+	filePath := f.FilePath
+	if filePath == "" {
+		filePath = "config/ksl/schema.zed"
+	}
+
+	schemaBytes, err := os.ReadFile(filePath)
+	if err != nil {
+		return "", fmt.Errorf("unable to read schema file %s: %w", filePath, err)
+	}
+	return string(schemaBytes), nil
+}
+
 // TODO: kessel, but simplifying for POC
 type KubeRbacToKessel struct {
-	ClusterId string
-	Kube      Getter
-	SpiceDb   *spicedb.Client
-	//SchemaSource SchemaSource
+	ClusterId    string
+	Kube         Getter
+	SpiceDb      *spicedb.Client
+	SchemaSource SchemaSource
 	// Experimental idea, not used currently
 	// History ObjectHistory
 }
@@ -55,6 +75,7 @@ type Getter interface {
 }
 
 type SchemaSource interface {
+	// GetSchema returns the schema as a string
 	GetSchema(ctx context.Context) (string, error)
 }
 
@@ -107,12 +128,10 @@ func (m *KubeRbacToKessel) ObjectDeleted(ctx context.Context, obj client.Object)
 }
 
 func (m *KubeRbacToKessel) SetUpSchema(ctx context.Context) error {
-	// load schema from file baked into image
-	schemaBytes, err := os.ReadFile("config/ksl/schema.zed")
+	schema, err := m.SchemaSource.GetSchema(ctx)
 	if err != nil {
-		log.Fatalf("unable to read schema file: %v", err)
+		return fmt.Errorf("failed to get schema: %w", err)
 	}
-	schema := string(schemaBytes)
 
 	request := &spicedbv1.WriteSchemaRequest{Schema: schema}
 	_, err = m.SpiceDb.WriteSchema(context.Background(), request)
@@ -251,7 +270,7 @@ func (m *KubeRbacToKessel) MapRoleBinding(ctx context.Context, binding *rbacv1.R
 					ObjectType: "kubernetes/role_binding",
 					ObjectId:   fmt.Sprintf("%s/%s/%s", m.ClusterId, binding.Namespace, binding.Name),
 				},
-				Relation: "t_role_binding",
+				Relation: "t_rbac_binding",
 				Subject: &spicedbv1.SubjectReference{
 					Object: &spicedbv1.ObjectReference{
 						ObjectType: "rbac/role_binding",
@@ -270,7 +289,7 @@ func (m *KubeRbacToKessel) MapRoleBinding(ctx context.Context, binding *rbacv1.R
 		// TODO: support resource names, for now assume namespace only
 		// In that case, it may result in multiple relationships to the same binding.
 		resourceType := "kubernetes/knamespace"
-		resourceId := fmt.Sprintf("%s/%s/%s", m.ClusterId, binding.Namespace, binding.Name)
+		resourceId := fmt.Sprintf("%s/%s", m.ClusterId, binding.Namespace)
 
 		updates = append(updates, &spicedbv1.RelationshipUpdate{
 			Operation: spicedbv1.RelationshipUpdate_OPERATION_TOUCH,
