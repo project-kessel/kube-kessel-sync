@@ -1,6 +1,6 @@
 definition kubernetes/cluster {
-	permission configmap_get = t_role_binding->kubernetes_pod_get + t_workspace->kubernetes_pod_get
-	permission pod_get = t_role_binding->kubernetes_pod_get + t_workspace->kubernetes_pod_get
+	permission configmaps_get = t_role_binding->kubernetes_configmaps_get + t_workspace->kubernetes_configmaps_get
+	permission pods_get = t_role_binding->kubernetes_pods_get + t_workspace->kubernetes_pods_get
 	permission role_binding = t_role_binding
 	relation t_role_binding: rbac/role_binding
 	permission workspace = t_workspace
@@ -10,8 +10,8 @@ definition kubernetes/cluster {
 definition kubernetes/knamespace {
 	permission cluster = t_cluster
 	relation t_cluster: kubernetes/cluster
-	permission configmap_get = t_role_binding->kubernetes_configmap_get + t_workspace->kubernetes_configmap_get + t_cluster->configmap_get
-	permission pod_get = t_role_binding->kubernetes_pod_get + t_workspace->kubernetes_pod_get + t_cluster->pod_get
+	permission configmaps_get = t_role_binding->kubernetes_configmaps_get + t_workspace->kubernetes_configmaps_get + t_cluster->configmaps_get
+	permission pods_get = t_role_binding->kubernetes_pods_get + t_workspace->kubernetes_pods_get + t_cluster->pods_get
 	permission role_binding = t_role_binding
 	relation t_role_binding: rbac/role_binding
 	permission workspace = t_workspace
@@ -33,8 +33,8 @@ definition rbac/group {
 definition rbac/platform {
 	permission binding = t_binding
 	relation t_binding: rbac/role_binding
-	permission kubernetes_configmap_get = t_binding->kubernetes_configmap_get
-	permission kubernetes_pod_get = t_binding->kubernetes_pod_get
+	permission kubernetes_configmaps_get = t_binding->kubernetes_configmaps_get
+	permission kubernetes_pods_get = t_binding->kubernetes_pods_get
 }
 
 definition rbac/principal {}
@@ -48,19 +48,19 @@ definition rbac/role {
 	relation t_kubernetes_all_all: rbac/principal:*
 	permission kubernetes_all_get = t_kubernetes_all_get
 	relation t_kubernetes_all_get: rbac/principal:*
-	permission kubernetes_configmap_all = t_kubernetes_configmap_all
-	relation t_kubernetes_configmap_all: rbac/principal:*
-	permission kubernetes_configmap_get = t_kubernetes_configmap_get + kubernetes_configmap_all + kubernetes_all_get + kubernetes_all_all + all_all_all + t_child->kubernetes_configmap_get
-	relation t_kubernetes_configmap_get: rbac/principal:*
-	permission kubernetes_pod_all = t_kubernetes_pod_all
-	relation t_kubernetes_pod_all: rbac/principal:*
-	permission kubernetes_pod_get = t_kubernetes_pod_get + kubernetes_pod_all + kubernetes_all_get + kubernetes_all_all + all_all_all + t_child->kubernetes_pod_get
-	relation t_kubernetes_pod_get: rbac/principal:*
+	permission kubernetes_configmaps_all = t_kubernetes_configmaps_all
+	relation t_kubernetes_configmaps_all: rbac/principal:*
+	permission kubernetes_configmaps_get = t_kubernetes_configmaps_get + kubernetes_configmaps_all + kubernetes_all_get + kubernetes_all_all + all_all_all + t_child->kubernetes_configmaps_get
+	relation t_kubernetes_configmaps_get: rbac/principal:*
+	permission kubernetes_pods_all = t_kubernetes_pods_all
+	relation t_kubernetes_pods_all: rbac/principal:*
+	permission kubernetes_pods_get = t_kubernetes_pods_get + kubernetes_pods_all + kubernetes_all_get + kubernetes_all_all + all_all_all + t_child->kubernetes_pods_get
+	relation t_kubernetes_pods_get: rbac/principal:*
 }
 
 definition rbac/role_binding {
-	permission kubernetes_configmap_get = (subject & t_role->kubernetes_configmap_get)
-	permission kubernetes_pod_get = (subject & t_role->kubernetes_pod_get)
+	permission kubernetes_configmaps_get = (subject & t_role->kubernetes_configmaps_get)
+	permission kubernetes_pods_get = (subject & t_role->kubernetes_pods_get)
 	permission role = t_role
 	relation t_role: rbac/role
 	permission subject = t_subject
@@ -70,8 +70,8 @@ definition rbac/role_binding {
 definition rbac/tenant {
 	permission binding = t_binding
 	relation t_binding: rbac/role_binding
-	permission kubernetes_configmap_get = t_binding->kubernetes_configmap_get + t_platform->kubernetes_configmap_get
-	permission kubernetes_pod_get = t_binding->kubernetes_pod_get + t_platform->kubernetes_pod_get
+	permission kubernetes_configmaps_get = t_binding->kubernetes_configmaps_get + t_platform->kubernetes_configmaps_get
+	permission kubernetes_pods_get = t_binding->kubernetes_pods_get + t_platform->kubernetes_pods_get
 	permission platform = t_platform
 	relation t_platform: rbac/platform
 }
@@ -79,8 +79,8 @@ definition rbac/tenant {
 definition rbac/workspace {
 	permission binding = t_binding
 	relation t_binding: rbac/role_binding
-	permission kubernetes_configmap_get = t_binding->kubernetes_configmap_get + t_parent->kubernetes_configmap_get
-	permission kubernetes_pod_get = t_binding->kubernetes_pod_get + t_parent->kubernetes_pod_get
+	permission kubernetes_configmaps_get = t_binding->kubernetes_configmaps_get + t_parent->kubernetes_configmaps_get
+	permission kubernetes_pods_get = t_binding->kubernetes_pods_get + t_parent->kubernetes_pods_get
 	permission parent = t_parent
 	relation t_parent: rbac/workspace | rbac/tenant
 }
