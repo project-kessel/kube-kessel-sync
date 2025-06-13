@@ -233,7 +233,7 @@ func main() {
 	if err := (&controller.KesselSyncReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
-		Sink:   mapper.NewInMemoryKesselSink(kubeRbac2Ksl),
+		Sink:   kubeRbac2Ksl,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "KesselSync")
 		os.Exit(1)

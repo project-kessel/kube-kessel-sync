@@ -32,29 +32,44 @@ import (
 	spicedb "github.com/authzed/authzed-go/v1"
 )
 
-// InMemoryKesselSink is an in-memory implementation of the [KubeObjectSink] interface,
-// which directly forwards the data to a mapper in memory,
-// as opposed to a separate queue.
-type InMemoryKesselSink struct {
-	mapper *KubeRbacToKessel
+// type ObjectHistory interface {
+// 	WhatChanged(ctx context.Context, obj client.Object) (removed, added client.Object, err error)
+// }
+
+var fullyConsistent = &spicedbv1.Consistency{
+	Requirement: &spicedbv1.Consistency_FullyConsistent{},
 }
 
-func NewInMemoryKesselSink(mapper *KubeRbacToKessel) *InMemoryKesselSink {
-	return &InMemoryKesselSink{mapper: mapper}
+// TODO: kessel, but simplifying for POC
+type KubeRbacToKessel struct {
+	ClusterId string
+	Kube      Getter
+	SpiceDb   *spicedb.Client
+	//SchemaSource SchemaSource
+	// Experimental idea, not used currently
+	// History ObjectHistory
 }
 
-func (s *InMemoryKesselSink) ObjectAddedOrChanged(ctx context.Context, obj client.Object) error {
+type Getter interface {
+	Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error
+}
+
+type SchemaSource interface {
+	GetSchema(ctx context.Context) (string, error)
+}
+
+func (m *KubeRbacToKessel) ObjectAddedOrChanged(ctx context.Context, obj client.Object) error {
 	log := logf.FromContext(ctx)
 
 	switch o := obj.(type) {
 	case *rbacv1.Role:
-		s.mapper.MapRole(ctx, o)
+		m.MapRole(ctx, o)
 	case *rbacv1.RoleBinding:
-		s.mapper.MapRoleBinding(ctx, o)
+		m.MapRoleBinding(ctx, o)
 	case *rbacv1.ClusterRole:
-		s.mapper.MapClusterRole(ctx, o)
+		m.MapClusterRole(ctx, o)
 	case *rbacv1.ClusterRoleBinding:
-		s.mapper.MapClusterRoleBinding(ctx, o)
+		m.MapClusterRoleBinding(ctx, o)
 	default:
 		gvk := obj.GetObjectKind().GroupVersionKind()
 		log.Info("Unknown object type",
@@ -67,7 +82,7 @@ func (s *InMemoryKesselSink) ObjectAddedOrChanged(ctx context.Context, obj clien
 	return nil
 }
 
-func (s *InMemoryKesselSink) ObjectDeleted(ctx context.Context, obj client.Object) error {
+func (m *KubeRbacToKessel) ObjectDeleted(ctx context.Context, obj client.Object) error {
 	log := logf.FromContext(ctx)
 
 	switch o := obj.(type) {
@@ -91,26 +106,9 @@ func (s *InMemoryKesselSink) ObjectDeleted(ctx context.Context, obj client.Objec
 	return nil
 }
 
-type ObjectHistory interface {
-	WhatChanged(ctx context.Context, obj client.Object) (removed, added client.Object, err error)
-}
-
-var fullyConsistent = &spicedbv1.Consistency{
-	Requirement: &spicedbv1.Consistency_FullyConsistent{},
-}
-
-// TODO: kessel, but simplifying for POC
-type KubeRbacToKessel struct {
-	ClusterId string
-	Kube      client.Client
-	SpiceDb   *spicedb.Client
-	// Experimental idea, not used currently
-	History ObjectHistory
-}
-
 func (m *KubeRbacToKessel) SetUpSchema(ctx context.Context) error {
 	// load schema from file baked into image
-	schemaBytes, err := os.ReadFile("config/schema.zed")
+	schemaBytes, err := os.ReadFile("config/ksl/schema.zed")
 	if err != nil {
 		log.Fatalf("unable to read schema file: %v", err)
 	}
@@ -166,7 +164,7 @@ func (m *KubeRbacToKessel) MapRole(ctx context.Context, role *rbacv1.Role) error
 
 		// ID the RBAC Role after the role's kube cluster, namespace, role name,
 		// and the rule's index within the Role.
-		roleId := fmt.Sprintf("%s/%s/%s/%d", role.Namespace, role.Name, rI)
+		roleId := fmt.Sprintf("%s/%s/%s/%d", m.ClusterId, role.Namespace, role.Name, rI)
 
 		// Create relationships for each resource and verb combination
 		// Resource name is ignored here because it affects the location of the binding,
@@ -331,6 +329,40 @@ func (m *KubeRbacToKessel) MapRoleBinding(ctx context.Context, binding *rbacv1.R
 		}
 	}
 
+	// Updates collected, write them to SpiceDB
+	if len(updates) > 0 {
+		log.Info("Writing RoleBinding relationships to SpiceDB", "updatesCount", len(updates))
+		_, err := m.SpiceDb.WriteRelationships(ctx, &spicedbv1.WriteRelationshipsRequest{
+			Updates: updates,
+		})
+		if err != nil {
+			log.Error(err, "Failed to write relationships to SpiceDB for RoleBinding", "name", binding.Name, "namespace", binding.Namespace)
+			return fmt.Errorf("failed to write relationships to SpiceDB for RoleBinding %s/%s: %w", binding.Namespace, binding.Name, err)
+		}
+		log.Info("Successfully wrote RoleBinding relationships to SpiceDB", "name", binding.Name, "namespace", binding.Namespace)
+	} else {
+		log.Info("No updates to write for RoleBinding", "name", binding.Name, "namespace", binding.Namespace)
+	}
+	// If we reach here, the mapping was successful
+	log.Info("Successfully mapped RoleBinding", "name", binding.Name, "namespace", binding.Namespace)
+
+	return nil
+}
+
+func (m *KubeRbacToKessel) MapClusterRole(ctx context.Context, clusterRole *rbacv1.ClusterRole) error {
+	log := logf.FromContext(ctx)
+	log.Info("Mapping ClusterRole", "name", clusterRole.Name)
+
+	// Implement mapping logic here
+	// For now, we just log it
+	log.Info("ClusterRole mapping not implemented yet", "name", clusterRole.Name)
+	return nil
+}
+
+func (m *KubeRbacToKessel) MapClusterRoleBinding(ctx context.Context, clusterRoleBinding *rbacv1.ClusterRoleBinding) error {
+	log := logf.FromContext(ctx)
+	log.Info("Mapping ClusterRoleBinding", "name", clusterRoleBinding.Name)
+	// Implement mapping logic here
 	return nil
 }
 
@@ -399,13 +431,6 @@ func (m *KubeRbacToKessel) deleteBindingRelationships(ctx context.Context, bindi
 		log.Info("Deleted binding relationships", "bindingId", bindingId)
 	}
 
-	return nil
-}
-
-func (m *KubeRbacToKessel) MapClusterRoleBinding(ctx context.Context, clusterRoleBinding *rbacv1.ClusterRoleBinding) error {
-	log := logf.FromContext(ctx)
-	log.Info("Mapping ClusterRoleBinding", "name", clusterRoleBinding.Name)
-	// Implement mapping logic here
 	return nil
 }
 
