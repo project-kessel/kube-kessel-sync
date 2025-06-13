@@ -2,12 +2,15 @@ package mapper_test
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"testing"
 
 	v1 "github.com/authzed/authzed-go/proto/authzed/api/v1"
 	"github.com/authzed/authzed-go/v1"
 	"github.com/authzed/grpcutil"
+	"github.com/ory/dockertest/v3"
 	"github.com/project-kessel/kube-kessel-sync/internal/mapper"
 	"github.com/project-kessel/kube-kessel-sync/internal/testutil"
 	"google.golang.org/grpc"
@@ -82,6 +85,9 @@ func TestMapper(t *testing.T) {
 
 			// Given a new role and binding, ensure the user has access to the namespace
 			response, err := spicedb.CheckPermission(ctx, &v1.CheckPermissionRequest{
+				Consistency: &v1.Consistency{
+					Requirement: &v1.Consistency_FullyConsistent{FullyConsistent: true},
+				},
 				WithTracing: true,
 				Resource: &v1.ObjectReference{
 					ObjectType: "kubernetes/knamespace",
@@ -130,28 +136,28 @@ func setupMapper(ctx context.Context, kube *testutil.FakeKube, spiceDb *authzed.
 // runSpiceDBTestServer spins up a SpiceDB container running the integration
 // test server.
 func runSpiceDBTestServer(t *testing.T) (port string, err error) {
-	// pool, err := dockertest.NewPool("") // Empty string uses default docker env
-	// if err != nil {
-	// 	return
-	// }
+	pool, err := dockertest.NewPool("") // Empty string uses default docker env
+	if err != nil {
+		return
+	}
 
-	// resource, err := pool.RunWithOptions(&dockertest.RunOptions{
-	// 	Repository:   "authzed/spicedb",
-	// 	Tag:          "latest", // Replace this with an actual version
-	// 	Cmd:          []string{"serve-testing"},
-	// 	ExposedPorts: []string{"50051/tcp", "50052/tcp"},
-	// })
-	// if err != nil {
-	// 	return
-	// }
+	resource, err := pool.RunWithOptions(&dockertest.RunOptions{
+		Repository:   "authzed/spicedb",
+		Tag:          "latest", // Replace this with an actual version
+		Cmd:          []string{"serve-testing"},
+		ExposedPorts: []string{"50051/tcp", "50052/tcp"},
+	})
+	if err != nil {
+		return
+	}
 
-	// // When you're done, kill and remove the container
-	// t.Cleanup(func() {
-	// 	_ = pool.Purge(resource)
-	// })
+	// When you're done, kill and remove the container
+	t.Cleanup(func() {
+		_ = pool.Purge(resource)
+	})
 
-	// return resource.GetPort("50051/tcp"), nil
-	return "50051", nil // For simplicity, return a fixed port. Replace with actual Docker setup if needed.
+	return resource.GetPort("50051/tcp"), nil
+	// return "50051", nil // For simplicity, return a fixed port. Replace with actual Docker setup if needed.
 }
 
 // spicedbTestClient creates a new SpiceDB client with random credentials.
@@ -160,16 +166,17 @@ func runSpiceDBTestServer(t *testing.T) (port string, err error) {
 // so that tests can be ran in parallel.
 func spicedbTestClient(port string) (*authzed.Client, error) {
 	// Generate a random credential to isolate this client from any others.
-	// buf := make([]byte, 20)
-	// if _, err := rand.Read(buf); err != nil {
-	// 	return nil, err
-	// }
-	// randomKey := base64.StdEncoding.EncodeToString(buf)
+	buf := make([]byte, 20)
+	if _, err := rand.Read(buf); err != nil {
+		return nil, err
+	}
+	randomKey := base64.StdEncoding.EncodeToString(buf)
 
 	return authzed.NewClient(
 		"localhost:"+port,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpcutil.WithInsecureBearerToken("mykey"),
+		// grpcutil.WithInsecureBearerToken("mykey"),
+		grpcutil.WithInsecureBearerToken(randomKey),
 		grpc.WithBlock(),
 	)
 }
