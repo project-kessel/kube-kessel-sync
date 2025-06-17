@@ -4,13 +4,16 @@ namespace kubernetes
 import rbac
 
 // This would be templated using ksl intermediate representation based on kinds deployed
+
 @rbac.add_v2_permission(app:'kubernetes', resource:'pods', verb:'get')
+@rbac.add_v2_permission(app:'kubernetes', resource:'pods', verb:'list')
 @rbac.add_v2_permission(app:'kubernetes', resource:'configmaps', verb:'get')
 type cluster {
     relation workspace: [ExactlyOne rbac.workspace]
     relation role_binding: [Any rbac.role_binding]
 
     relation pods_get: role_binding.kubernetes_pods_get or workspace.kubernetes_pods_get
+    relation pods_list: role_binding.kubernetes_pods_list or workspace.kubernetes_pods_list
     relation configmaps_get: role_binding.kubernetes_configmaps_get or workspace.kubernetes_configmaps_get
 }
 
@@ -20,6 +23,7 @@ type knamespace {
     relation cluster: [ExactlyOne cluster]
 
     relation pods_get: role_binding.kubernetes_pods_get or workspace.kubernetes_pods_get or cluster.pods_get
+    relation pods_list: role_binding.kubernetes_pods_list or workspace.kubernetes_pods_list or cluster.pods_list
     relation configmaps_get: role_binding.kubernetes_configmaps_get or workspace.kubernetes_configmaps_get or cluster.configmaps_get
 }
 

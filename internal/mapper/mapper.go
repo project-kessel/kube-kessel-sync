@@ -162,6 +162,13 @@ func (m *KubeRbacToKessel) MapRole(ctx context.Context, role *rbacv1.Role) error
 	// (e.g. query on some kube_role_id attribute vs resource ID prefix)
 	// and some of the lower level stuff is taken care of for you.
 
+	/*
+		add role for new version with some version of bindings
+		then delete old version of role and bindings?
+		we need to know how the cache works, because ideally we're able to get a consistent snapshot
+		of the roles *and* bindings.
+	*/
+
 	res, err := m.SpiceDb.DeleteRelationships(ctx, &spicedbv1.DeleteRelationshipsRequest{
 		RelationshipFilter: &spicedbv1.RelationshipFilter{
 			ResourceType: "rbac/role",

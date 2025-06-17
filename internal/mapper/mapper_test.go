@@ -22,7 +22,6 @@ import (
 func TestMapper(t *testing.T) {
 	var err error
 	ctx := context.Background()
-	// g := gomega.NewWithT(t)
 
 	port, err := runSpiceDBTestServer(t)
 	if err != nil {
@@ -30,20 +29,10 @@ func TestMapper(t *testing.T) {
 	}
 
 	t.Run("namespace bindings", func(t *testing.T) {
-		t.Run("grant access", func(t *testing.T) {
+		t.Run("grant access when role an binding created", func(t *testing.T) {
 			t.Parallel()
 
-			spicedb, err := spicedbTestClient(port)
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			kube := testutil.NewFakeKube()
-
-			k2k, err := setupMapper(ctx, kube, spicedb)
-			if err != nil {
-				t.Fatal(err)
-			}
+			spicedb, kube, k2k := setupTest(ctx, t, port)
 
 			role := &rbacv1.Role{
 				ObjectMeta: metav1.ObjectMeta{
@@ -84,43 +73,249 @@ func TestMapper(t *testing.T) {
 			k2k.ObjectAddedOrChanged(ctx, binding)
 
 			// Given a new role and binding, ensure the user has access to the namespace
-			response, err := spicedb.CheckPermission(ctx, &v1.CheckPermissionRequest{
-				Consistency: &v1.Consistency{
-					Requirement: &v1.Consistency_FullyConsistent{FullyConsistent: true},
+			assertAccess(t, ctx, spicedb,
+				"kubernetes/knamespace", "test-cluster/test-namespace", "pods_get",
+				"rbac/principal", "kubernetes/test-user")
+		})
+
+		t.Run("update access when role is updated", func(t *testing.T) {
+			t.Parallel()
+
+			spicedb, kube, k2k := setupTest(ctx, t, port)
+
+			role := &rbacv1.Role{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-role",
+					Namespace: "test-namespace",
 				},
-				WithTracing: true,
-				Resource: &v1.ObjectReference{
-					ObjectType: "kubernetes/knamespace",
-					ObjectId:   "test-cluster/test-namespace",
-				},
-				Permission: "pods_get",
-				Subject: &v1.SubjectReference{
-					Object: &v1.ObjectReference{
-						ObjectType: "rbac/principal",
-						ObjectId:   "kubernetes/test-user",
+				Rules: []rbacv1.PolicyRule{
+					{
+						APIGroups: []string{""},
+						Resources: []string{"pods"},
+						Verbs:     []string{"get"}, //, "list", "create", "update"},
 					},
-				}})
-
-			if err != nil {
-				t.Fatal(err)
+				},
+			}
+			binding := &rbacv1.RoleBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-binding",
+					Namespace: "test-namespace",
+				},
+				Subjects: []rbacv1.Subject{
+					{
+						Kind: "User",
+						Name: "test-user",
+					},
+				},
+				RoleRef: rbacv1.RoleRef{
+					APIGroup: rbacv1.GroupName,
+					Kind:     "Role",
+					Name:     role.Name,
+				},
 			}
 
-			if response.Permissionship != v1.CheckPermissionResponse_PERMISSIONSHIP_HAS_PERMISSION {
-				jsonTrace, _ := json.MarshalIndent(response.DebugTrace, "", "  ")
-				t.Logf("Debug trace: %s", jsonTrace)
-				t.Errorf("expected user to have access to namespace, got %s", response.Permissionship)
-			}
+			kube.AddOrReplace(role)
+			kube.AddOrReplace(binding)
 
+			k2k.ObjectAddedOrChanged(ctx, role)
+			k2k.ObjectAddedOrChanged(ctx, binding)
+
+			role.Rules[0].Verbs = append(role.Rules[0].Verbs, "list")
+			kube.AddOrReplace(role)
+			k2k.ObjectAddedOrChanged(ctx, role)
+
+			assertAccess(t, ctx, spicedb,
+				"kubernetes/knamespace", "test-cluster/test-namespace", "pods_list",
+				"rbac/principal", "kubernetes/test-user")
 		})
 	})
 
 	// Given a new role and binding, ensure the user doesn't have access to things not granted
+	t.Run("namespace bindings - no access to other resources", func(t *testing.T) {
+		t.Parallel()
+
+		spicedb, kube, k2k := setupTest(ctx, t, port)
+
+		role := &rbacv1.Role{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-role",
+				Namespace: "test-namespace",
+			},
+			Rules: []rbacv1.PolicyRule{
+				{
+					APIGroups: []string{""},
+					Resources: []string{"pods"},
+					Verbs:     []string{"get"}, //, "list", "create", "update"},
+				},
+			},
+		}
+		binding := &rbacv1.RoleBinding{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-binding",
+				Namespace: "test-namespace",
+			},
+			Subjects: []rbacv1.Subject{
+				{
+					Kind: "User",
+					Name: "test-user",
+				},
+			},
+			RoleRef: rbacv1.RoleRef{
+				APIGroup: rbacv1.GroupName,
+				Kind:     "Role",
+				Name:     role.Name,
+			},
+		}
+		kube.AddOrReplace(role)
+		kube.AddOrReplace(binding)
+		k2k.ObjectAddedOrChanged(ctx, role)
+		k2k.ObjectAddedOrChanged(ctx, binding)
+
+		// Given a new role and binding, ensure the user doesn't have access to things not granted
+		assertNoAccess(t, ctx, spicedb,
+			"kubernetes/knamespace", "test-cluster/test-namespace", "pods_list",
+			"rbac/principal", "kubernetes/test-user")
+		assertNoAccess(t, ctx, spicedb,
+			"kubernetes/knamespace", "test-cluster/test-namespace", "configmaps_get",
+			"rbac/principal", "kubernetes/test-user")
+		assertNoAccess(t, ctx, spicedb,
+			"kubernetes/knamespace", "test-cluster/other-namespace", "pods_get",
+			"rbac/principal", "kubernetes/test-user")
+	})
 
 	// Given a new role and binding, ensure a different user doesn't have access
+	t.Run("does not grant access to other subjects when role an binding created", func(t *testing.T) {
+		t.Parallel()
+
+		spicedb, kube, k2k := setupTest(ctx, t, port)
+
+		role := &rbacv1.Role{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-role",
+				Namespace: "test-namespace",
+			},
+			Rules: []rbacv1.PolicyRule{
+				{
+					APIGroups: []string{""},
+					Resources: []string{"pods"},
+					Verbs:     []string{"get"}, //, "list", "create", "update"},
+				},
+			},
+		}
+		binding := &rbacv1.RoleBinding{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-binding",
+				Namespace: "test-namespace",
+			},
+			Subjects: []rbacv1.Subject{
+				{
+					Kind: "User",
+					Name: "test-user",
+				},
+			},
+			RoleRef: rbacv1.RoleRef{
+				APIGroup: rbacv1.GroupName,
+				Kind:     "Role",
+				Name:     role.Name,
+			},
+		}
+
+		// By the time add or changed is called, it's already in the cluster.
+		kube.AddOrReplace(role)
+		kube.AddOrReplace(binding)
+
+		k2k.ObjectAddedOrChanged(ctx, role)
+		k2k.ObjectAddedOrChanged(ctx, binding)
+
+		// Given a new role and binding, ensure the user has access to the namespace
+		assertNoAccess(t, ctx, spicedb,
+			"kubernetes/knamespace", "test-cluster/test-namespace", "pods_get",
+			"rbac/principal", "kubernetes/test-user-2")
+	})
 
 	// Given a new role with resource name and binding, ensure the user has access to that resource
 
 	// Given a new role with resource name and binding, ensure the user has doesn't have access to the namespace
+
+	// Given a role update which adds a resource name, ensure user has access to the resource
+
+	// Given a role update which adds a resource name, ensure user does not have access to the namespace
+}
+
+func setupTest(ctx context.Context, t *testing.T, port string) (*authzed.Client, *testutil.FakeKube, *mapper.KubeRbacToKessel) {
+	spicedb, err := spicedbTestClient(port)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	kube := testutil.NewFakeKube()
+
+	k2k, err := setupMapper(ctx, kube, spicedb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return spicedb, kube, k2k
+}
+
+// checkPermission checks if a subject has a specific permission on a resource in SpiceDB
+// Returns true if the subject has permission, false otherwise
+func checkPermission(t *testing.T, ctx context.Context, spicedb *authzed.Client,
+	resourceType, resourceId, permission, subjectType, subjectId string) (bool, *v1.CheckPermissionResponse) {
+	t.Helper()
+
+	response, err := spicedb.CheckPermission(ctx, &v1.CheckPermissionRequest{
+		Consistency: &v1.Consistency{
+			Requirement: &v1.Consistency_FullyConsistent{FullyConsistent: true},
+		},
+		WithTracing: true,
+		Resource: &v1.ObjectReference{
+			ObjectType: resourceType,
+			ObjectId:   resourceId,
+		},
+		Permission: permission,
+		Subject: &v1.SubjectReference{
+			Object: &v1.ObjectReference{
+				ObjectType: subjectType,
+				ObjectId:   subjectId,
+			},
+		}})
+
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	hasPermission := response.Permissionship == v1.CheckPermissionResponse_PERMISSIONSHIP_HAS_PERMISSION
+	return hasPermission, response
+}
+
+// assertAccess checks that a subject has a specific permission on a resource in SpiceDB
+func assertAccess(t *testing.T, ctx context.Context, spicedb *authzed.Client,
+	resourceType, resourceId, permission, subjectType, subjectId string) {
+	t.Helper()
+
+	hasPermission, response := checkPermission(t, ctx, spicedb, resourceType, resourceId, permission, subjectType, subjectId)
+
+	if !hasPermission {
+		jsonTrace, _ := json.MarshalIndent(response.DebugTrace, "", "  ")
+		t.Logf("Debug trace: %s", jsonTrace)
+		t.Errorf("expected subject %s:%s to have permission %s on resource %s:%s, got %s",
+			subjectType, subjectId, permission, resourceType, resourceId, response.Permissionship)
+	}
+}
+
+// assertNoAccess checks that a subject does NOT have a specific permission on a resource in SpiceDB
+func assertNoAccess(t *testing.T, ctx context.Context, spicedb *authzed.Client,
+	resourceType, resourceId, permission, subjectType, subjectId string) {
+	t.Helper()
+
+	hasPermission, response := checkPermission(t, ctx, spicedb, resourceType, resourceId, permission, subjectType, subjectId)
+
+	if hasPermission {
+		jsonTrace, _ := json.MarshalIndent(response.DebugTrace, "", "  ")
+		t.Logf("Debug trace: %s", jsonTrace)
+		t.Errorf("expected subject %s:%s to NOT have permission %s on resource %s:%s, but it does",
+			subjectType, subjectId, permission, resourceType, resourceId)
+	}
 }
 
 func setupMapper(ctx context.Context, kube *testutil.FakeKube, spiceDb *authzed.Client) (*mapper.KubeRbacToKessel, error) {
