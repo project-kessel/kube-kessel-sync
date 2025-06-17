@@ -128,109 +128,108 @@ func TestMapper(t *testing.T) {
 				"kubernetes/knamespace", "test-cluster/test-namespace", "pods_list",
 				"rbac/principal", "kubernetes/test-user")
 		})
-	})
 
-	// Given a new role and binding, ensure the user doesn't have access to things not granted
-	t.Run("namespace bindings - no access to other resources", func(t *testing.T) {
-		t.Parallel()
+		t.Run("does not grant access to other resources", func(t *testing.T) {
+			t.Parallel()
 
-		spicedb, kube, k2k := setupTest(ctx, t, port)
+			spicedb, kube, k2k := setupTest(ctx, t, port)
 
-		role := &rbacv1.Role{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-role",
-				Namespace: "test-namespace",
-			},
-			Rules: []rbacv1.PolicyRule{
-				{
-					APIGroups: []string{""},
-					Resources: []string{"pods"},
-					Verbs:     []string{"get"}, //, "list", "create", "update"},
+			role := &rbacv1.Role{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-role",
+					Namespace: "test-namespace",
 				},
-			},
-		}
-		binding := &rbacv1.RoleBinding{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-binding",
-				Namespace: "test-namespace",
-			},
-			Subjects: []rbacv1.Subject{
-				{
-					Kind: "User",
-					Name: "test-user",
+				Rules: []rbacv1.PolicyRule{
+					{
+						APIGroups: []string{""},
+						Resources: []string{"pods"},
+						Verbs:     []string{"get"}, //, "list", "create", "update"},
+					},
 				},
-			},
-			RoleRef: rbacv1.RoleRef{
-				APIGroup: rbacv1.GroupName,
-				Kind:     "Role",
-				Name:     role.Name,
-			},
-		}
-		kube.AddOrReplace(role)
-		kube.AddOrReplace(binding)
-		k2k.ObjectAddedOrChanged(ctx, role)
-		k2k.ObjectAddedOrChanged(ctx, binding)
-
-		// Given a new role and binding, ensure the user doesn't have access to things not granted
-		assertNoAccess(t, ctx, spicedb,
-			"kubernetes/knamespace", "test-cluster/test-namespace", "pods_list",
-			"rbac/principal", "kubernetes/test-user")
-		assertNoAccess(t, ctx, spicedb,
-			"kubernetes/knamespace", "test-cluster/test-namespace", "configmaps_get",
-			"rbac/principal", "kubernetes/test-user")
-		assertNoAccess(t, ctx, spicedb,
-			"kubernetes/knamespace", "test-cluster/other-namespace", "pods_get",
-			"rbac/principal", "kubernetes/test-user")
-	})
-
-	// Given a new role and binding, ensure a different user doesn't have access
-	t.Run("does not grant access to other subjects when role an binding created", func(t *testing.T) {
-		t.Parallel()
-
-		spicedb, kube, k2k := setupTest(ctx, t, port)
-
-		role := &rbacv1.Role{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-role",
-				Namespace: "test-namespace",
-			},
-			Rules: []rbacv1.PolicyRule{
-				{
-					APIGroups: []string{""},
-					Resources: []string{"pods"},
-					Verbs:     []string{"get"}, //, "list", "create", "update"},
+			}
+			binding := &rbacv1.RoleBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-binding",
+					Namespace: "test-namespace",
 				},
-			},
-		}
-		binding := &rbacv1.RoleBinding{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-binding",
-				Namespace: "test-namespace",
-			},
-			Subjects: []rbacv1.Subject{
-				{
-					Kind: "User",
-					Name: "test-user",
+				Subjects: []rbacv1.Subject{
+					{
+						Kind: "User",
+						Name: "test-user",
+					},
 				},
-			},
-			RoleRef: rbacv1.RoleRef{
-				APIGroup: rbacv1.GroupName,
-				Kind:     "Role",
-				Name:     role.Name,
-			},
-		}
+				RoleRef: rbacv1.RoleRef{
+					APIGroup: rbacv1.GroupName,
+					Kind:     "Role",
+					Name:     role.Name,
+				},
+			}
+			kube.AddOrReplace(role)
+			kube.AddOrReplace(binding)
+			k2k.ObjectAddedOrChanged(ctx, role)
+			k2k.ObjectAddedOrChanged(ctx, binding)
 
-		// By the time add or changed is called, it's already in the cluster.
-		kube.AddOrReplace(role)
-		kube.AddOrReplace(binding)
+			// Given a new role and binding, ensure the user doesn't have access to things not granted
+			assertNoAccess(t, ctx, spicedb,
+				"kubernetes/knamespace", "test-cluster/test-namespace", "pods_list",
+				"rbac/principal", "kubernetes/test-user")
+			assertNoAccess(t, ctx, spicedb,
+				"kubernetes/knamespace", "test-cluster/test-namespace", "configmaps_get",
+				"rbac/principal", "kubernetes/test-user")
+			assertNoAccess(t, ctx, spicedb,
+				"kubernetes/knamespace", "test-cluster/other-namespace", "pods_get",
+				"rbac/principal", "kubernetes/test-user")
+		})
 
-		k2k.ObjectAddedOrChanged(ctx, role)
-		k2k.ObjectAddedOrChanged(ctx, binding)
+		// Given a new role and binding, ensure a different user doesn't have access
+		t.Run("does not grant access to other subjects when role an binding created", func(t *testing.T) {
+			t.Parallel()
 
-		// Given a new role and binding, ensure the user has access to the namespace
-		assertNoAccess(t, ctx, spicedb,
-			"kubernetes/knamespace", "test-cluster/test-namespace", "pods_get",
-			"rbac/principal", "kubernetes/test-user-2")
+			spicedb, kube, k2k := setupTest(ctx, t, port)
+
+			role := &rbacv1.Role{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-role",
+					Namespace: "test-namespace",
+				},
+				Rules: []rbacv1.PolicyRule{
+					{
+						APIGroups: []string{""},
+						Resources: []string{"pods"},
+						Verbs:     []string{"get"}, //, "list", "create", "update"},
+					},
+				},
+			}
+			binding := &rbacv1.RoleBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-binding",
+					Namespace: "test-namespace",
+				},
+				Subjects: []rbacv1.Subject{
+					{
+						Kind: "User",
+						Name: "test-user",
+					},
+				},
+				RoleRef: rbacv1.RoleRef{
+					APIGroup: rbacv1.GroupName,
+					Kind:     "Role",
+					Name:     role.Name,
+				},
+			}
+
+			// By the time add or changed is called, it's already in the cluster.
+			kube.AddOrReplace(role)
+			kube.AddOrReplace(binding)
+
+			k2k.ObjectAddedOrChanged(ctx, role)
+			k2k.ObjectAddedOrChanged(ctx, binding)
+
+			// Given a new role and binding, ensure the user has access to the namespace
+			assertNoAccess(t, ctx, spicedb,
+				"kubernetes/knamespace", "test-cluster/test-namespace", "pods_get",
+				"rbac/principal", "kubernetes/test-user-2")
+		})
 	})
 
 	// Given a new role with resource name and binding, ensure the user has access to that resource
