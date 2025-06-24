@@ -134,7 +134,7 @@ func (m *KubeRbacToKessel) MapRole(ctx context.Context, role *rbacv1.Role) error
 	// since the RBAC role is split into multiple.
 
 	// For now, we delete all previous permission relations
-	// This is not atomic, because it requires its own request.
+	// This is not atomic, because it requires its own request separate from the updates.
 	// That means there is a period of (potentially arbitrary) time where
 	// the Role has no permissions, resulting in lost access.
 	// It also results in lots of extra unwanted snapshots in spicedb.
@@ -196,19 +196,18 @@ func (m *KubeRbacToKessel) MapRole(ctx context.Context, role *rbacv1.Role) error
 	// and then add/remove the relationships as needed.
 	// For POC, we'll just remove all existing RBAC role bindings and recreate.
 	// To do this, we get all role bindings and their subjects.
-	bindingIds := []string{}
-	err = m.getBindingIds(ctx, roleResourceId, bindingIds)
+	bindingIds, err := m.getBindingIds(ctx, roleResourceId)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to get binding IDs for Role %s/%s: %w", role.Namespace, role.Name, err)
 	}
+
 	// If any bindings, get the subjects of one of them, and then delete all relationships to each.
 	// This is not atomic, but it is consistent.
 	if len(bindingIds) > 0 {
 		// Get the subjects for the first binding. They will all be the same,
 		// and we need this to be able to reconstitute new bindings later.
 		firstBindingId := bindingIds[0]
-		subjects := []string{}
-		err := m.getRbacBindingSubjects(ctx, firstBindingId, subjects)
+		subjects, err := m.getRbacBindingSubjects(ctx, firstBindingId)
 		if err != nil {
 			log.Error(err, "Failed to get subjects for binding", "bindingId", firstBindingId)
 			return fmt.Errorf("failed to get subjects for binding %s: %w", firstBindingId, err)
@@ -238,24 +237,27 @@ func (m *KubeRbacToKessel) MapRole(ctx context.Context, role *rbacv1.Role) error
 				return fmt.Errorf("failed to delete relationships for Role %s/%s: %w", role.Namespace, role.Name, err)
 			}
 
-			// Delete all the binding relationships where the binding is the resource
-			// (i.e. to role & subjects)
-			_, err = m.SpiceDb.DeleteRelationships(ctx, &spicedbv1.DeleteRelationshipsRequest{
-				RelationshipFilter: &spicedbv1.RelationshipFilter{
-					ResourceType:       "rbac/role_binding",
-					OptionalResourceId: bindingId,
-				},
-			})
-			if err != nil {
-				return fmt.Errorf("failed to delete relationships for Role %s/%s: %w", role.Namespace, role.Name, err)
-			}
-
 			// Now for each kubernetes binding implied by the RBAC bindings, recreate the RBAC bindings.
 			for _, resourceId := range uniqueResourceIds {
-				updates, err = m.getNamespaceBindingUpdates(ctx, role, resourceId, subjects, updates)
+				// Delete all the binding relationships where the binding is the resource
+				// (i.e. to role & subjects)
+				// Done in this loop since we can use prefix matching to delete all.
+				// With Kessel, I think we could design schema & API to simplify this stuff.
+				_, err = m.SpiceDb.DeleteRelationships(ctx, &spicedbv1.DeleteRelationshipsRequest{
+					RelationshipFilter: &spicedbv1.RelationshipFilter{
+						ResourceType:             "rbac/role_binding",
+						OptionalResourceIdPrefix: resourceId.String(),
+					},
+				})
 				if err != nil {
-					return fmt.Errorf("failed to map namespace binding for Role %s/%s: %w", role.Namespace, role.Name, err)
+					return fmt.Errorf("failed to delete relationships for Role Binding %s: %w", resourceId.String(), err)
 				}
+
+				bindingUpdates, err := m.getNamespaceBindingUpdates(ctx, role, resourceId, subjects)
+				if err != nil {
+					return fmt.Errorf("failed to get namespace binding updates for Role Binding %s: %w", resourceId.String(), err)
+				}
+				updates = append(updates, bindingUpdates...)
 			}
 		}
 	}
@@ -272,8 +274,9 @@ func (m *KubeRbacToKessel) MapRole(ctx context.Context, role *rbacv1.Role) error
 	return nil
 }
 
-func (m *KubeRbacToKessel) getBindingIds(ctx context.Context, kubeRoleId *ResourceId, bindingIds []string) error {
-	return forEach(
+func (m *KubeRbacToKessel) getBindingIds(ctx context.Context, kubeRoleId *ResourceId) ([]string, error) {
+	bindingIds := []string{}
+	err := forEach(
 		func() (spicedbv1.PermissionsService_LookupSubjectsClient, error) {
 			return m.SpiceDb.LookupSubjects(ctx, &spicedbv1.LookupSubjectsRequest{
 				Consistency: fullyConsistent,
@@ -290,10 +293,12 @@ func (m *KubeRbacToKessel) getBindingIds(ctx context.Context, kubeRoleId *Resour
 			return nil
 		},
 	)
+	return bindingIds, err
 }
 
-func (m *KubeRbacToKessel) getRbacBindingSubjects(ctx context.Context, bindingId string, subjects []string) error {
-	return forEach(
+func (m *KubeRbacToKessel) getRbacBindingSubjects(ctx context.Context, bindingId string) ([]string, error) {
+	subjects := []string{}
+	err := forEach(
 		func() (spicedbv1.PermissionsService_ReadRelationshipsClient, error) {
 			return m.SpiceDb.ReadRelationships(ctx, &spicedbv1.ReadRelationshipsRequest{
 				Consistency: fullyConsistent,
@@ -310,6 +315,7 @@ func (m *KubeRbacToKessel) getRbacBindingSubjects(ctx context.Context, bindingId
 			return nil
 		},
 	)
+	return subjects, err
 }
 
 func (m *KubeRbacToKessel) MapRoleBinding(ctx context.Context, binding *rbacv1.RoleBinding) error {
@@ -336,8 +342,7 @@ func (m *KubeRbacToKessel) MapRoleBinding(ctx context.Context, binding *rbacv1.R
 	m.deleteBindingRelationships(ctx, binding)
 
 	principalIds := m.convertSubjectsToPrincipalIds(binding.Subjects)
-	updates := []*spicedbv1.RelationshipUpdate{}
-	updates, err := m.getNamespaceBindingUpdates(ctx, role, NewResourceIdFromNamespacedName(m.ClusterId, binding), principalIds, updates)
+	updates, err := m.getNamespaceBindingUpdates(ctx, role, NewResourceIdFromNamespacedName(m.ClusterId, binding), principalIds)
 	if err != nil {
 		log.Error(err, "Failed to map RoleBinding", "name", binding.Name, "namespace", binding.Namespace)
 		return fmt.Errorf("failed to map RoleBinding %s/%s: %w", binding.Namespace, binding.Name, err)
@@ -374,11 +379,12 @@ func (m *KubeRbacToKessel) convertSubjectsToPrincipalIds(subjects []rbacv1.Subje
 	return principalIds
 }
 
-// Given a Role and a corresponding Kube RoleBinding, generate binding updates and append them to the provided slice.
-func (m *KubeRbacToKessel) getNamespaceBindingUpdates(ctx context.Context, role *rbacv1.Role, kubeBindingId *ResourceId, principals []string, updates []*spicedbv1.RelationshipUpdate) ([]*spicedbv1.RelationshipUpdate, error) {
+// Given a Role and a corresponding Kube RoleBinding, generate binding updates.
+func (m *KubeRbacToKessel) getNamespaceBindingUpdates(ctx context.Context, role *rbacv1.Role, kubeBindingId *ResourceId, principals []string) ([]*spicedbv1.RelationshipUpdate, error) {
 	log := logf.FromContext(ctx)
 
 	roleResourceId := NewResourceIdFromNamespacedName(m.ClusterId, role)
+	updates := []*spicedbv1.RelationshipUpdate{}
 
 	// For each rule in the role, create a binding to that RBAC role.
 	// Then, attach each subject to that binding.
