@@ -45,8 +45,12 @@ type pod {
     relation update: role_binding.kubernetes_pods_update or knamespace.pods_update
 }
 
-// Simulate at attribute which tracks the role bindings
+// Relationships needed to retrive objects during role or binding updates.
 type role_binding {
     relation rbac_binding: [Any rbac.role_binding]
-    relation role: rbac_binding.role
+}
+
+type role {
+    relation role_binding: [Any role_binding]
+    relation rbac_binding: role_binding.rbac_binding
 }

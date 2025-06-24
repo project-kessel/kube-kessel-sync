@@ -39,10 +39,15 @@ definition kubernetes/pod {
 	permission update = t_role_binding->kubernetes_pods_update + t_knamespace->pods_update
 }
 
+definition kubernetes/role {
+	permission rbac_binding = t_role_binding->rbac_binding
+	permission role_binding = t_role_binding
+	relation t_role_binding: kubernetes/role_binding
+}
+
 definition kubernetes/role_binding {
 	permission rbac_binding = t_rbac_binding
 	relation t_rbac_binding: rbac/role_binding
-	permission role = t_rbac_binding->role
 }
 
 definition rbac/group {
