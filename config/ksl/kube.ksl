@@ -7,6 +7,7 @@ import rbac
 
 @rbac.add_v2_permission(app:'kubernetes', resource:'pods', verb:'get')
 @rbac.add_v2_permission(app:'kubernetes', resource:'pods', verb:'list')
+@rbac.add_v2_permission(app:'kubernetes', resource:'pods', verb:'update')
 @rbac.add_v2_permission(app:'kubernetes', resource:'configmaps', verb:'get')
 type cluster {
     relation workspace: [ExactlyOne rbac.workspace]
@@ -14,6 +15,7 @@ type cluster {
 
     relation pods_get: role_binding.kubernetes_pods_get or workspace.kubernetes_pods_get
     relation pods_list: role_binding.kubernetes_pods_list or workspace.kubernetes_pods_list
+    relation pods_update: role_binding.kubernetes_pods_update or workspace.kubernetes_pods_update
     relation configmaps_get: role_binding.kubernetes_configmaps_get or workspace.kubernetes_configmaps_get
 }
 
@@ -24,10 +26,27 @@ type knamespace {
 
     relation pods_get: role_binding.kubernetes_pods_get or workspace.kubernetes_pods_get or cluster.pods_get
     relation pods_list: role_binding.kubernetes_pods_list or workspace.kubernetes_pods_list or cluster.pods_list
+    relation pods_update: role_binding.kubernetes_pods_update or workspace.kubernetes_pods_update or cluster.pods_update
     relation configmaps_get: role_binding.kubernetes_configmaps_get or workspace.kubernetes_configmaps_get or cluster.configmaps_get
+}
+
+type configmap {
+    relation knamespace: [ExactlyOne knamespace]
+    relation role_binding: [Any rbac.role_binding]
+
+    relation get: role_binding.kubernetes_configmaps_get or knamespace.configmaps_get
+}
+
+type pod {
+    relation knamespace: [ExactlyOne knamespace]
+    relation role_binding: [Any rbac.role_binding]
+
+    relation get: role_binding.kubernetes_pods_get or knamespace.pods_get
+    relation update: role_binding.kubernetes_pods_update or knamespace.pods_update
 }
 
 // Simulate at attribute which tracks the role bindings
 type role_binding {
     relation rbac_binding: [Any rbac.role_binding]
+    relation role: rbac_binding.role
 }
