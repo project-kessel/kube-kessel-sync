@@ -399,104 +399,88 @@ func (m *KubeRbacToKessel) getNamespaceBindingUpdates(ctx context.Context, role 
 
 		// Track that this binding relates to the kubernetes binding for lookups later.
 		// See: deleteBindingRelationships
-		updates = append(updates, &spicedbv1.RelationshipUpdate{
-			Operation: spicedbv1.RelationshipUpdate_OPERATION_TOUCH,
-			Relationship: &spicedbv1.Relationship{
-				Resource: &spicedbv1.ObjectReference{
-					ObjectType: "kubernetes/role_binding",
-					ObjectId:   kubeBindingId.String(),
-				},
-				Relation: "t_rbac_binding",
-				Subject: &spicedbv1.SubjectReference{
-					Object: &spicedbv1.ObjectReference{
-						ObjectType: "rbac/role_binding",
-						ObjectId:   rbacBindingId,
-					},
-				},
+		updates = append(updates, relationshipTouch(&spicedbv1.ObjectReference{
+			ObjectType: "kubernetes/role_binding",
+			ObjectId:   kubeBindingId.String(),
+		}, "t_rbac_binding", &spicedbv1.SubjectReference{
+			Object: &spicedbv1.ObjectReference{
+				ObjectType: "rbac/role_binding",
+				ObjectId:   rbacBindingId,
 			},
-		}, &spicedbv1.RelationshipUpdate{
-			// Now also track from the kube role to the binding,
-			// so we can traverse from the kube role to rbac bindings
-			Operation: spicedbv1.RelationshipUpdate_OPERATION_TOUCH,
-			Relationship: &spicedbv1.Relationship{
-				Resource: &spicedbv1.ObjectReference{
-					ObjectType: "kubernetes/role",
-					ObjectId:   roleResourceId.String(),
-				},
-				Relation: "t_role_binding",
-				Subject: &spicedbv1.SubjectReference{
-					Object: &spicedbv1.ObjectReference{
-						ObjectType: "kubernetes/role_binding",
-						ObjectId:   kubeBindingId.String(),
-					},
-				},
+		}))
+
+		// Now also track from the kube role to the binding,
+		// so we can traverse from the kube role to rbac bindings
+		updates = append(updates, relationshipTouch(&spicedbv1.ObjectReference{
+			ObjectType: "kubernetes/role",
+			ObjectId:   roleResourceId.String(),
+		}, "t_role_binding", &spicedbv1.SubjectReference{
+			Object: &spicedbv1.ObjectReference{
+				ObjectType: "kubernetes/role_binding",
+				ObjectId:   kubeBindingId.String(),
 			},
-		})
+		}))
 
 		// Create a relationship from the resource(s) to this binding
 		// Where a role gets bound in RBAC depends on:
-		// - the referenced role's rule's resource names
-		// - the role binding's namespace
-		// ...in that order.
-		// What is the resource? The namespace, unless the rule has any resource names.
-		// TODO: support resource names, for now assume namespace only
-		// In that case, it may result in multiple relationships to the same binding.
-		resourceType := "kubernetes/knamespace"
-		resourceId := fmt.Sprintf("%s/%s", m.ClusterId, kubeBindingId.Namespace)
+		// - the referenced role's rule's resource names (if specified, bind to specific resources)
+		// - the role binding's namespace (if no resource names, bind to namespace)
+		if len(rule.ResourceNames) > 0 {
+			// If resource names are specified, bind to each specific resource
+			for _, resource := range rule.Resources {
+				for _, resourceName := range rule.ResourceNames {
+					resourceType := fmt.Sprintf("kubernetes/%s", pluralToSingular(resource))
+					resourceId := NewResourceId(m.ClusterId, kubeBindingId.Namespace, resourceName)
 
-		updates = append(updates, &spicedbv1.RelationshipUpdate{
-			Operation: spicedbv1.RelationshipUpdate_OPERATION_TOUCH,
-			Relationship: &spicedbv1.Relationship{
-				Resource: &spicedbv1.ObjectReference{
-					ObjectType: resourceType,
-					ObjectId:   resourceId,
-				},
-				Relation: "t_role_binding",
-				Subject: &spicedbv1.SubjectReference{
-					Object: &spicedbv1.ObjectReference{
-						ObjectType: "rbac/role_binding",
-						ObjectId:   rbacBindingId,
-					},
-				},
-			},
-		})
+					updates = append(updates, relationshipTouch(&spicedbv1.ObjectReference{
+						ObjectType: resourceType,
+						ObjectId:   resourceId.String(),
+					}, "t_role_binding", &spicedbv1.SubjectReference{
+						Object: &spicedbv1.ObjectReference{
+							ObjectType: "rbac/role_binding",
+							ObjectId:   rbacBindingId,
+						},
+					}))
+				}
+			}
+		} else {
+			// If no resource names, bind to the namespace (grants access to all resources of the specified type)
+			resourceType := "kubernetes/knamespace"
+			resourceId := fmt.Sprintf("%s/%s", m.ClusterId, kubeBindingId.Namespace)
 
-		// Create a relationship from the binding to the role-rule
-		updates = append(updates, &spicedbv1.RelationshipUpdate{
-			Operation: spicedbv1.RelationshipUpdate_OPERATION_TOUCH,
-			Relationship: &spicedbv1.Relationship{
-				Resource: &spicedbv1.ObjectReference{
+			updates = append(updates, relationshipTouch(&spicedbv1.ObjectReference{
+				ObjectType: resourceType,
+				ObjectId:   resourceId,
+			}, "t_role_binding", &spicedbv1.SubjectReference{
+				Object: &spicedbv1.ObjectReference{
 					ObjectType: "rbac/role_binding",
 					ObjectId:   rbacBindingId,
 				},
-				Relation: "t_role",
-				Subject: &spicedbv1.SubjectReference{
-					Object: &spicedbv1.ObjectReference{
-						ObjectType: "rbac/role",
-						ObjectId:   roleResourceId.WithSegment(rI),
-					},
-				},
+			}))
+		}
+
+		// Create a relationship from the binding to the role-rule
+		updates = append(updates, relationshipTouch(&spicedbv1.ObjectReference{
+			ObjectType: "rbac/role_binding",
+			ObjectId:   rbacBindingId,
+		}, "t_role", &spicedbv1.SubjectReference{
+			Object: &spicedbv1.ObjectReference{
+				ObjectType: "rbac/role",
+				ObjectId:   roleResourceId.WithSegment(rI),
 			},
-		})
+		}))
 
 		// Create relationships from the binding to each subject
 		for _, principalId := range principals {
-			updates = append(updates, &spicedbv1.RelationshipUpdate{
-				Operation: spicedbv1.RelationshipUpdate_OPERATION_TOUCH,
-				Relationship: &spicedbv1.Relationship{
-					Resource: &spicedbv1.ObjectReference{
-						ObjectType: "rbac/role_binding",
-						ObjectId:   rbacBindingId,
-					},
-					Relation: "t_subject",
-					Subject: &spicedbv1.SubjectReference{
-						Object: &spicedbv1.ObjectReference{
-							ObjectType: "rbac/principal",
-							ObjectId:   principalId,
-						},
-					},
+			updates = append(updates, relationshipTouch(&spicedbv1.ObjectReference{
+				ObjectType: "rbac/role_binding",
+				ObjectId:   rbacBindingId,
+			}, "t_subject", &spicedbv1.SubjectReference{
+				Object: &spicedbv1.ObjectReference{
+					ObjectType: "rbac/principal",
+					ObjectId:   principalId,
 				},
-			})
+			}))
 		}
 	}
 
@@ -636,4 +620,46 @@ func forEach[T any, S interface {
 	}
 
 	return nil
+}
+
+// pluralToSingular converts common Kubernetes plural resource names to singular
+func pluralToSingular(resource string) string {
+	switch resource {
+	case "configmaps":
+		return "configmap"
+	case "pods":
+		return "pod"
+	case "services":
+		return "service"
+	case "deployments":
+		return "deployment"
+	case "secrets":
+		return "secret"
+	case "nodes":
+		return "node"
+	case "namespaces":
+		return "namespace"
+	case "persistentvolumes":
+		return "persistentvolume"
+	case "persistentvolumeclaims":
+		return "persistentvolumeclaim"
+	default:
+		// Simple heuristic: remove 's' if it ends with 's'
+		if len(resource) > 1 && resource[len(resource)-1] == 's' {
+			return resource[:len(resource)-1]
+		}
+		return resource
+	}
+}
+
+// Create a RelationshipUpdate with TOUCH operation
+func relationshipTouch(resource *spicedbv1.ObjectReference, relation string, subject *spicedbv1.SubjectReference) *spicedbv1.RelationshipUpdate {
+	return &spicedbv1.RelationshipUpdate{
+		Operation: spicedbv1.RelationshipUpdate_OPERATION_TOUCH,
+		Relationship: &spicedbv1.Relationship{
+			Resource: resource,
+			Relation: relation,
+			Subject:  subject,
+		},
+	}
 }
