@@ -284,7 +284,54 @@ func TestMapper(t *testing.T) {
 				"rbac/principal", "kubernetes/test-user")
 		})
 
-		// Given a new role with resource name and binding, ensure the user has doesn't have access to the namespace
+		// Given a role with resource name, ensure the user doesn't have access to the namespace
+		t.Run("deny access to namespace when role has resource name", func(t *testing.T) {
+			t.Parallel()
+
+			spicedb, kube, k2k := setupTest(ctx, t, port)
+
+			role := &rbacv1.Role{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-role",
+					Namespace: "test-namespace",
+				},
+				Rules: []rbacv1.PolicyRule{
+					{
+						APIGroups:     []string{""},
+						Resources:     []string{"configmaps"},
+						Verbs:         []string{"get"},
+						ResourceNames: []string{"test-configmap"},
+					},
+				},
+			}
+			binding := &rbacv1.RoleBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-binding",
+					Namespace: "test-namespace",
+				},
+				Subjects: []rbacv1.Subject{
+					{
+						Kind: "User",
+						Name: "test-user",
+					},
+				},
+				RoleRef: rbacv1.RoleRef{
+					APIGroup: rbacv1.GroupName,
+					Kind:     "Role",
+					Name:     role.Name,
+				},
+			}
+
+			kube.AddOrReplace(role)
+			kube.AddOrReplace(binding)
+
+			k2k.ObjectAddedOrChanged(ctx, role)
+			k2k.ObjectAddedOrChanged(ctx, binding)
+
+			assertNoAccess(t, ctx, spicedb,
+				"kubernetes/knamespace", "test-cluster/test-namespace", "configmaps_get",
+				"rbac/principal", "kubernetes/test-user")
+		})
 
 		// Given a role update which adds a resource name, ensure user has access to the resource
 		t.Run("moves access from namespace to resource when resourcename added to role", func(t *testing.T) {
@@ -340,7 +387,142 @@ func TestMapper(t *testing.T) {
 				"rbac/principal", "kubernetes/test-user")
 		})
 
-		// Given a role update which adds a resource name, ensure user does not have access to the namespace
+		t.Run("role update with resource name removes namespace access", func(t *testing.T) {
+			spicedb, kube, k2k := setupTest(ctx, t, port)
+
+			role := &rbacv1.Role{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-role",
+					Namespace: "test-namespace",
+				},
+				Rules: []rbacv1.PolicyRule{
+					{
+						APIGroups: []string{""},
+						Resources: []string{"pods"},
+						Verbs:     []string{"get", "update"},
+					},
+				},
+			}
+			binding := &rbacv1.RoleBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-binding",
+					Namespace: "test-namespace",
+				},
+				Subjects: []rbacv1.Subject{
+					{
+						Kind: "User",
+						Name: "test-user",
+					},
+				},
+				RoleRef: rbacv1.RoleRef{
+					APIGroup: rbacv1.GroupName,
+					Kind:     "Role",
+					Name:     role.Name,
+				},
+			}
+
+			kube.AddOrReplace(role)
+			kube.AddOrReplace(binding)
+
+			k2k.ObjectAddedOrChanged(ctx, role)
+			k2k.ObjectAddedOrChanged(ctx, binding)
+
+			// Verify user has access to namespace-level resources initially
+			assertAccess(t, ctx, spicedb,
+				"kubernetes/knamespace", "test-cluster/test-namespace", "pods_update",
+				"rbac/principal", "kubernetes/test-user")
+
+			// Add a resource name to the role, which should restrict access to only that specific resource
+			role.Rules[0].ResourceNames = []string{"test-pod"}
+
+			kube.AddOrReplace(role)
+			k2k.ObjectAddedOrChanged(ctx, role)
+
+			// Verify user no longer has access to namespace-level resources
+			assertNoAccess(t, ctx, spicedb,
+				"kubernetes/knamespace", "test-cluster/test-namespace", "pods_update",
+				"rbac/principal", "kubernetes/test-user")
+
+			// Verify user still has access to the specific resource
+			assertAccess(t, ctx, spicedb,
+				"kubernetes/pod", "test-cluster/test-namespace/test-pod", "update",
+				"rbac/principal", "kubernetes/test-user")
+		})
+
+		t.Run("role update with different resource names revokes old access and grants new access", func(t *testing.T) {
+			t.Parallel()
+
+			spicedb, kube, k2k := setupTest(ctx, t, port)
+
+			role := &rbacv1.Role{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-role",
+					Namespace: "test-namespace",
+				},
+				Rules: []rbacv1.PolicyRule{
+					{
+						APIGroups:     []string{""},
+						Resources:     []string{"configmaps"},
+						Verbs:         []string{"get"},
+						ResourceNames: []string{"old-configmap"},
+					},
+				},
+			}
+			binding := &rbacv1.RoleBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-binding",
+					Namespace: "test-namespace",
+				},
+				Subjects: []rbacv1.Subject{
+					{
+						Kind: "User",
+						Name: "test-user",
+					},
+				},
+				RoleRef: rbacv1.RoleRef{
+					APIGroup: rbacv1.GroupName,
+					Kind:     "Role",
+					Name:     role.Name,
+				},
+			}
+
+			kube.AddOrReplace(role)
+			kube.AddOrReplace(binding)
+
+			k2k.ObjectAddedOrChanged(ctx, role)
+			k2k.ObjectAddedOrChanged(ctx, binding)
+
+			// Verify user has access to the initial resource name
+			assertAccess(t, ctx, spicedb,
+				"kubernetes/configmap", "test-cluster/test-namespace/old-configmap", "get",
+				"rbac/principal", "kubernetes/test-user")
+
+			// Verify user does not have access to namespace-level resources
+			assertNoAccess(t, ctx, spicedb,
+				"kubernetes/knamespace", "test-cluster/test-namespace", "configmaps_get",
+				"rbac/principal", "kubernetes/test-user")
+
+			// Update the role with different resource names
+			role.Rules[0].ResourceNames = []string{"new-configmap"}
+
+			kube.AddOrReplace(role)
+			k2k.ObjectAddedOrChanged(ctx, role)
+
+			// Verify user no longer has access to the old resource name
+			assertNoAccess(t, ctx, spicedb,
+				"kubernetes/configmap", "test-cluster/test-namespace/old-configmap", "get",
+				"rbac/principal", "kubernetes/test-user")
+
+			// Verify user now has access to the new resource name
+			assertAccess(t, ctx, spicedb,
+				"kubernetes/configmap", "test-cluster/test-namespace/new-configmap", "get",
+				"rbac/principal", "kubernetes/test-user")
+
+			// Verify user still does not have access to namespace-level resources
+			assertNoAccess(t, ctx, spicedb,
+				"kubernetes/knamespace", "test-cluster/test-namespace", "configmaps_get",
+				"rbac/principal", "kubernetes/test-user")
+		})
 	})
 
 }
