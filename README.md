@@ -1,7 +1,13 @@
 # kube-kessel-sync
-// TODO(user): Add simple overview of use/purpose
+
+A POC demonstrating an operator for synchronizing Kubernetes cluster RBAC configuration with Kessel for equivalent access policies. This could enable:
+
+- External evaluation of Kubernetes policies e.g. across multiple clusters or management tools
+- Compatibility with Kessel RBAC to understand multi-cluster policies
+- Seamless migration to Kessel as a drop-in replacement for Kube RBAC with richer expression (organizational hierarchies; attribute-, time-, and label-based rules; etc)
 
 ## Description
+
 // TODO(user): An in-depth paragraph about your project and overview of use
 
 ## Getting Started
