@@ -17,6 +17,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 func TestMapper(t *testing.T) {
@@ -229,6 +230,72 @@ func TestMapper(t *testing.T) {
 			assertNoAccess(t, ctx, spicedb,
 				"kubernetes/knamespace", "test-cluster/test-namespace", "pods_get",
 				"rbac/principal", "kubernetes/test-user-2")
+		})
+
+		t.Run("removes access when role binding is deleted", func(t *testing.T) {
+			t.Parallel()
+
+			spicedb, kube, k2k := setupTest(ctx, t, port)
+
+			role := &rbacv1.Role{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-role",
+					Namespace: "test-namespace",
+				},
+				Rules: []rbacv1.PolicyRule{
+					{
+						APIGroups: []string{""},
+						Resources: []string{"pods"},
+						Verbs:     []string{"get", "list"},
+					},
+				},
+			}
+			binding := &rbacv1.RoleBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-binding",
+					Namespace: "test-namespace",
+				},
+				Subjects: []rbacv1.Subject{
+					{
+						Kind: "User",
+						Name: "test-user",
+					},
+				},
+				RoleRef: rbacv1.RoleRef{
+					APIGroup: rbacv1.GroupName,
+					Kind:     "Role",
+					Name:     role.Name,
+				},
+			}
+
+			kube.AddOrReplace(role)
+			kube.AddOrReplace(binding)
+
+			k2k.ObjectAddedOrChanged(ctx, role)
+			k2k.ObjectAddedOrChanged(ctx, binding)
+
+			// Verify user has access initially
+			assertAccess(t, ctx, spicedb,
+				"kubernetes/knamespace", "test-cluster/test-namespace", "pods_get",
+				"rbac/principal", "kubernetes/test-user")
+			assertAccess(t, ctx, spicedb,
+				"kubernetes/knamespace", "test-cluster/test-namespace", "pods_list",
+				"rbac/principal", "kubernetes/test-user")
+
+			// Remove the role binding
+			kube.Remove(client.ObjectKey{
+				Name:      binding.Name,
+				Namespace: binding.Namespace,
+			}, binding)
+			k2k.ObjectDeleted(ctx, binding)
+
+			// Verify user no longer has access
+			assertNoAccess(t, ctx, spicedb,
+				"kubernetes/knamespace", "test-cluster/test-namespace", "pods_get",
+				"rbac/principal", "kubernetes/test-user")
+			assertNoAccess(t, ctx, spicedb,
+				"kubernetes/knamespace", "test-cluster/test-namespace", "pods_list",
+				"rbac/principal", "kubernetes/test-user")
 		})
 	})
 
@@ -523,8 +590,74 @@ func TestMapper(t *testing.T) {
 				"kubernetes/knamespace", "test-cluster/test-namespace", "configmaps_get",
 				"rbac/principal", "kubernetes/test-user")
 		})
-	})
 
+		t.Run("removes access when role binding is deleted for resource-level permissions", func(t *testing.T) {
+			t.Parallel()
+
+			spicedb, kube, k2k := setupTest(ctx, t, port)
+
+			role := &rbacv1.Role{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-role",
+					Namespace: "test-namespace",
+				},
+				Rules: []rbacv1.PolicyRule{
+					{
+						APIGroups:     []string{""},
+						Resources:     []string{"configmaps"},
+						Verbs:         []string{"get", "update"},
+						ResourceNames: []string{"test-configmap"},
+					},
+				},
+			}
+			binding := &rbacv1.RoleBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-binding",
+					Namespace: "test-namespace",
+				},
+				Subjects: []rbacv1.Subject{
+					{
+						Kind: "User",
+						Name: "test-user",
+					},
+				},
+				RoleRef: rbacv1.RoleRef{
+					APIGroup: rbacv1.GroupName,
+					Kind:     "Role",
+					Name:     role.Name,
+				},
+			}
+
+			kube.AddOrReplace(role)
+			kube.AddOrReplace(binding)
+
+			k2k.ObjectAddedOrChanged(ctx, role)
+			k2k.ObjectAddedOrChanged(ctx, binding)
+
+			// Verify user has access to the specific resource initially
+			assertAccess(t, ctx, spicedb,
+				"kubernetes/configmap", "test-cluster/test-namespace/test-configmap", "get",
+				"rbac/principal", "kubernetes/test-user")
+			assertAccess(t, ctx, spicedb,
+				"kubernetes/configmap", "test-cluster/test-namespace/test-configmap", "update",
+				"rbac/principal", "kubernetes/test-user")
+
+			// Remove the role binding
+			kube.Remove(client.ObjectKey{
+				Name:      binding.Name,
+				Namespace: binding.Namespace,
+			}, binding)
+			k2k.ObjectDeleted(ctx, binding)
+
+			// Verify user no longer has access to the specific resource
+			assertNoAccess(t, ctx, spicedb,
+				"kubernetes/configmap", "test-cluster/test-namespace/test-configmap", "get",
+				"rbac/principal", "kubernetes/test-user")
+			assertNoAccess(t, ctx, spicedb,
+				"kubernetes/configmap", "test-cluster/test-namespace/test-configmap", "update",
+				"rbac/principal", "kubernetes/test-user")
+		})
+	})
 }
 
 func setupTest(ctx context.Context, t *testing.T, port string) (*authzed.Client, *testutil.FakeKube, *mapper.KubeRbacToKessel) {
