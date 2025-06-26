@@ -10,7 +10,9 @@ definition kubernetes/cluster {
 }
 
 definition kubernetes/configmap {
-	permission get = t_role_binding->kubernetes_configmaps_get + t_knamespace->configmaps_get
+	permission cluster_resource = t_cluster_resource
+	relation t_cluster_resource: kubernetes/configmap
+	permission get = t_role_binding->kubernetes_configmaps_get + t_knamespace->configmaps_get + t_cluster_resource->get
 	permission knamespace = t_knamespace
 	relation t_knamespace: kubernetes/knamespace
 	permission role_binding = t_role_binding
@@ -31,12 +33,14 @@ definition kubernetes/knamespace {
 }
 
 definition kubernetes/pod {
-	permission get = t_role_binding->kubernetes_pods_get + t_knamespace->pods_get
+	permission cluster_resource = t_cluster_resource
+	relation t_cluster_resource: kubernetes/pod
+	permission get = t_role_binding->kubernetes_pods_get + t_knamespace->pods_get + t_cluster_resource->get
 	permission knamespace = t_knamespace
 	relation t_knamespace: kubernetes/knamespace
 	permission role_binding = t_role_binding
 	relation t_role_binding: rbac/role_binding
-	permission update = t_role_binding->kubernetes_pods_update + t_knamespace->pods_update
+	permission update = t_role_binding->kubernetes_pods_update + t_knamespace->pods_update + t_cluster_resource->update
 }
 
 definition kubernetes/role {
