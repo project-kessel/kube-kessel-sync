@@ -300,6 +300,18 @@ func TestMapper(t *testing.T) {
 			assertNoAccess(t, ctx, spicedb,
 				"kubernetes/knamespace", "test-cluster/test-namespace", "pods_list",
 				"rbac/principal", "kubernetes/test-user")
+
+			// Verify no relationships remain for the kube binding or rbac bindings
+			// Since this was the only binding, there should be no relationships left
+			kubeBindingCount := countTotalRelationships(t, ctx, spicedb, "kubernetes/role_binding")
+			if kubeBindingCount != 0 {
+				t.Errorf("Expected 0 relationships for kubernetes/role_binding after RoleBinding deletion, got %d", kubeBindingCount)
+			}
+
+			rbacBindingCount := countTotalRelationships(t, ctx, spicedb, "rbac/role_binding")
+			if rbacBindingCount != 0 {
+				t.Errorf("Expected 0 relationships for rbac/role_binding after RoleBinding deletion, got %d", rbacBindingCount)
+			}
 		})
 	})
 
@@ -660,6 +672,18 @@ func TestMapper(t *testing.T) {
 			assertNoAccess(t, ctx, spicedb,
 				"kubernetes/configmap", "test-cluster/test-namespace/test-configmap", "update",
 				"rbac/principal", "kubernetes/test-user")
+
+			// Verify no relationships remain for the kube binding or rbac bindings
+			// Since this was the only binding, there should be no relationships left
+			kubeBindingCount := countTotalRelationships(t, ctx, spicedb, "kubernetes/role_binding")
+			if kubeBindingCount != 0 {
+				t.Errorf("Expected 0 relationships for kubernetes/role_binding after RoleBinding deletion, got %d", kubeBindingCount)
+			}
+
+			rbacBindingCount := countTotalRelationships(t, ctx, spicedb, "rbac/role_binding")
+			if rbacBindingCount != 0 {
+				t.Errorf("Expected 0 relationships for rbac/role_binding after RoleBinding deletion, got %d", rbacBindingCount)
+			}
 		})
 	})
 
