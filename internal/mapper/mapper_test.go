@@ -12,6 +12,7 @@ import (
 	"github.com/authzed/grpcutil"
 	"github.com/ory/dockertest/v3"
 	"github.com/project-kessel/kube-kessel-sync/internal/mapper"
+	"github.com/project-kessel/kube-kessel-sync/internal/streamutil"
 	"github.com/project-kessel/kube-kessel-sync/internal/testutil"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -236,7 +237,6 @@ func TestMapper(t *testing.T) {
 		})
 
 		t.Run("removes access when role binding is deleted", func(t *testing.T) {
-			t.Skip("TODO: implement delete")
 			t.Parallel()
 
 			spicedb, kube, k2k := setupTest(ctx, t, port)
@@ -596,7 +596,6 @@ func TestMapper(t *testing.T) {
 		})
 
 		t.Run("removes access when role binding is deleted for resource-level permissions", func(t *testing.T) {
-			t.Skip("TODO: implement delete")
 			t.Parallel()
 
 			spicedb, kube, k2k := setupTest(ctx, t, port)
@@ -1488,6 +1487,175 @@ func TestMapper(t *testing.T) {
 				"rbac/principal", "kubernetes/test-user")
 		})
 	})
+
+	t.Run("role deletion revokes namespace-level access", func(t *testing.T) {
+		spicedb, kube, k2k := setupTest(ctx, t, port)
+
+		role := &rbacv1.Role{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-role",
+				Namespace: "test-namespace",
+			},
+			Rules: []rbacv1.PolicyRule{{
+				APIGroups: []string{""},
+				Resources: []string{"pods"},
+				Verbs:     []string{"get"},
+			}},
+		}
+		binding := &rbacv1.RoleBinding{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-binding",
+				Namespace: "test-namespace",
+			},
+			Subjects: []rbacv1.Subject{{Kind: "User", Name: "test-user"}},
+			RoleRef: rbacv1.RoleRef{
+				APIGroup: rbacv1.GroupName,
+				Kind:     "Role",
+				Name:     role.Name,
+			},
+		}
+		kube.AddOrReplace(role)
+		kube.AddOrReplace(binding)
+		k2k.ObjectAddedOrChanged(ctx, role)
+		k2k.ObjectAddedOrChanged(ctx, binding)
+		// Verify access
+		assertAccess(t, ctx, spicedb,
+			"kubernetes/knamespace", "test-cluster/test-namespace", "pods_get",
+			"rbac/principal", "kubernetes/test-user")
+		// Delete role
+		k2k.ObjectDeleted(ctx, role)
+		// Verify access revoked
+		assertNoAccess(t, ctx, spicedb,
+			"kubernetes/knamespace", "test-cluster/test-namespace", "pods_get",
+			"rbac/principal", "kubernetes/test-user")
+		// Verify no relationships remain
+		resourceTypes := []string{"kubernetes/role", "kubernetes/role_binding", "rbac/role", "rbac/role_binding"}
+		for _, rt := range resourceTypes {
+			relationshipCount := countTotalRelationships(t, ctx, spicedb, rt)
+			if relationshipCount != 0 {
+				t.Errorf("Expected 0 relationships for resource type %s after role deletion, got %d", rt, relationshipCount)
+			}
+		}
+	})
+
+	t.Run("role deletion revokes resource-level access", func(t *testing.T) {
+		spicedb, kube, k2k := setupTest(ctx, t, port)
+		role := &rbacv1.Role{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-role",
+				Namespace: "test-namespace",
+			},
+			Rules: []rbacv1.PolicyRule{{
+				APIGroups:     []string{""},
+				Resources:     []string{"configmaps"},
+				Verbs:         []string{"get"},
+				ResourceNames: []string{"test-configmap"},
+			}},
+		}
+		binding := &rbacv1.RoleBinding{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-binding",
+				Namespace: "test-namespace",
+			},
+			Subjects: []rbacv1.Subject{{Kind: "User", Name: "test-user"}},
+			RoleRef: rbacv1.RoleRef{
+				APIGroup: rbacv1.GroupName,
+				Kind:     "Role",
+				Name:     role.Name,
+			},
+		}
+		kube.AddOrReplace(role)
+		kube.AddOrReplace(binding)
+		k2k.ObjectAddedOrChanged(ctx, role)
+		k2k.ObjectAddedOrChanged(ctx, binding)
+		// Verify access
+		assertAccess(t, ctx, spicedb,
+			"kubernetes/configmap", "test-cluster/test-namespace/test-configmap", "get",
+			"rbac/principal", "kubernetes/test-user")
+		// Delete role
+		k2k.ObjectDeleted(ctx, role)
+		// Verify access revoked
+		assertNoAccess(t, ctx, spicedb,
+			"kubernetes/configmap", "test-cluster/test-namespace/test-configmap", "get",
+			"rbac/principal", "kubernetes/test-user")
+		// Verify no relationships remain
+		resourceTypes := []string{"kubernetes/role", "kubernetes/role_binding", "rbac/role", "rbac/role_binding"}
+		for _, rt := range resourceTypes {
+			relationshipCount := countTotalRelationships(t, ctx, spicedb, rt)
+			if relationshipCount != 0 {
+				t.Errorf("Expected 0 relationships for resource type %s after role deletion, got %d", rt, relationshipCount)
+			}
+		}
+	})
+
+	t.Run("role deletion revokes access for multiple bindings", func(t *testing.T) {
+		spicedb, kube, k2k := setupTest(ctx, t, port)
+		role := &rbacv1.Role{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-role",
+				Namespace: "test-namespace",
+			},
+			Rules: []rbacv1.PolicyRule{{
+				APIGroups: []string{""},
+				Resources: []string{"pods"},
+				Verbs:     []string{"get"},
+			}},
+		}
+		binding1 := &rbacv1.RoleBinding{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "binding-1",
+				Namespace: "test-namespace",
+			},
+			Subjects: []rbacv1.Subject{{Kind: "User", Name: "user-1"}},
+			RoleRef: rbacv1.RoleRef{
+				APIGroup: rbacv1.GroupName,
+				Kind:     "Role",
+				Name:     role.Name,
+			},
+		}
+		binding2 := &rbacv1.RoleBinding{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "binding-2",
+				Namespace: "test-namespace",
+			},
+			Subjects: []rbacv1.Subject{{Kind: "User", Name: "user-2"}},
+			RoleRef: rbacv1.RoleRef{
+				APIGroup: rbacv1.GroupName,
+				Kind:     "Role",
+				Name:     role.Name,
+			},
+		}
+		kube.AddOrReplace(role)
+		kube.AddOrReplace(binding1)
+		kube.AddOrReplace(binding2)
+		k2k.ObjectAddedOrChanged(ctx, role)
+		k2k.ObjectAddedOrChanged(ctx, binding1)
+		k2k.ObjectAddedOrChanged(ctx, binding2)
+		// Verify access for both users
+		assertAccess(t, ctx, spicedb,
+			"kubernetes/knamespace", "test-cluster/test-namespace", "pods_get",
+			"rbac/principal", "kubernetes/user-1")
+		assertAccess(t, ctx, spicedb,
+			"kubernetes/knamespace", "test-cluster/test-namespace", "pods_get",
+			"rbac/principal", "kubernetes/user-2")
+		// Delete role
+		k2k.ObjectDeleted(ctx, role)
+		// Verify access revoked for both users
+		assertNoAccess(t, ctx, spicedb,
+			"kubernetes/knamespace", "test-cluster/test-namespace", "pods_get",
+			"rbac/principal", "kubernetes/user-1")
+		assertNoAccess(t, ctx, spicedb,
+			"kubernetes/knamespace", "test-cluster/test-namespace", "pods_get",
+			"rbac/principal", "kubernetes/user-2")
+		// Verify no relationships remain
+		resourceTypes := []string{"kubernetes/role", "kubernetes/role_binding", "rbac/role", "rbac/role_binding"}
+		for _, rt := range resourceTypes {
+			relationshipCount := countTotalRelationships(t, ctx, spicedb, rt)
+			if relationshipCount != 0 {
+				t.Errorf("Expected 0 relationships for resource type %s after role deletion, got %d", rt, relationshipCount)
+			}
+		}
+	})
 }
 
 func setupTest(ctx context.Context, t *testing.T, port string) (*authzed.Client, *testutil.FakeKube, *mapper.KubeRbacToKessel) {
@@ -1625,4 +1793,31 @@ func spicedbTestClient(port string) (*authzed.Client, error) {
 		grpcutil.WithInsecureBearerToken(randomKey),
 		grpc.WithBlock(),
 	)
+}
+
+// countTotalRelationships counts the total number of relationships in SpiceDB for a given resource type
+func countTotalRelationships(t *testing.T, ctx context.Context, spicedb *authzed.Client, resourceType string) int {
+	t.Helper()
+
+	count := 0
+	err := streamutil.ForEach(
+		func() (v1.PermissionsService_ReadRelationshipsClient, error) {
+			return spicedb.ReadRelationships(ctx, &v1.ReadRelationshipsRequest{
+				Consistency: &v1.Consistency{
+					Requirement: &v1.Consistency_FullyConsistent{FullyConsistent: true},
+				},
+				RelationshipFilter: &v1.RelationshipFilter{
+					ResourceType: resourceType,
+				},
+			})
+		},
+		func(response *v1.ReadRelationshipsResponse) error {
+			count++
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return count
 }
