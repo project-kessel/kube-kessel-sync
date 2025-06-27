@@ -1,0 +1,16 @@
+---
+description: How to run specific tests by name or pattern.
+globs: 
+alwaysApply: false
+---
+This project uses nested Go tests. To run a speciifc test, the argument to -run should follow this pattern:
+
+`{parent test pattern}/"{sub test pattern}"`
+
+If there is multiple levels of nesting, then you add another `/` delimeter followed by another pattern, like so:
+
+`{parent test pattern}/"{sub test pattern}"/"{sub test pattern}"`
+
+Example command for this project:
+
+`go test ./internal/mapper -run TestMapper/resource/"role update"`
