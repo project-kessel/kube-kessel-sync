@@ -887,6 +887,93 @@ func TestMapper(t *testing.T) {
 				"rbac/principal", "kubernetes/test-user")
 		})
 
+		// Test clusterrole with resource names - new namespace should have access to matching resources
+		t.Run("clusterrole with resource names - new namespace access", func(t *testing.T) {
+			t.Parallel()
+
+			spicedb, kube, k2k := setupTest(ctx, t, port)
+
+			// Create initial namespace
+			testNamespace := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-namespace",
+				},
+			}
+			kube.AddOrReplace(testNamespace)
+			k2k.ObjectAddedOrChanged(ctx, testNamespace)
+
+			// Create clusterrole with specific resource names
+			clusterRole := &rbacv1.ClusterRole{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-cluster-role",
+				},
+				Rules: []rbacv1.PolicyRule{
+					{
+						APIGroups:     []string{""},
+						Resources:     []string{"configmaps"},
+						Verbs:         []string{"get", "update"},
+						ResourceNames: []string{"specific-configmap"},
+					},
+				},
+			}
+			clusterBinding := &rbacv1.ClusterRoleBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-cluster-binding",
+				},
+				Subjects: []rbacv1.Subject{
+					{
+						Kind: "User",
+						Name: "test-user",
+					},
+				},
+				RoleRef: rbacv1.RoleRef{
+					APIGroup: rbacv1.GroupName,
+					Kind:     "ClusterRole",
+					Name:     clusterRole.Name,
+				},
+			}
+
+			kube.AddOrReplace(clusterRole)
+			kube.AddOrReplace(clusterBinding)
+			k2k.ObjectAddedOrChanged(ctx, clusterRole)
+			k2k.ObjectAddedOrChanged(ctx, clusterBinding)
+
+			// Verify user has access to specific resource in existing namespace
+			assertAccess(t, ctx, spicedb,
+				"kubernetes/configmap", "test-cluster/test-namespace/specific-configmap", "get",
+				"rbac/principal", "kubernetes/test-user")
+
+			// Verify user does NOT have namespace-level access
+			assertNoAccess(t, ctx, spicedb,
+				"kubernetes/knamespace", "test-cluster/test-namespace", "configmaps_get",
+				"rbac/principal", "kubernetes/test-user")
+
+			// Simulate adding a new namespace after the cluster binding
+			newNamespace := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "new-namespace",
+				},
+			}
+
+			kube.AddOrReplace(newNamespace)
+			k2k.ObjectAddedOrChanged(ctx, newNamespace)
+
+			// Verify user has access to the specific resource in the new namespace
+			assertAccess(t, ctx, spicedb,
+				"kubernetes/configmap", "test-cluster/new-namespace/specific-configmap", "get",
+				"rbac/principal", "kubernetes/test-user")
+
+			// Verify user does NOT have namespace-level access in the new namespace
+			assertNoAccess(t, ctx, spicedb,
+				"kubernetes/knamespace", "test-cluster/new-namespace", "configmaps_get",
+				"rbac/principal", "kubernetes/test-user")
+
+			// Verify user does NOT have access to other configmaps in the new namespace
+			assertNoAccess(t, ctx, spicedb,
+				"kubernetes/configmap", "test-cluster/new-namespace/other-configmap", "get",
+				"rbac/principal", "kubernetes/test-user")
+		})
+
 		// Test to demonstrate the prefix collision bug
 		t.Run("clusterrole deletion should not affect namespaced role with same name", func(t *testing.T) {
 			t.Parallel()
