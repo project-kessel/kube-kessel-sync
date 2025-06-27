@@ -799,10 +799,18 @@ func TestMapper(t *testing.T) {
 
 		// Given a cluster role binding, ensure new namespaces added after the binding are also accessible
 		t.Run("new namespaces added after cluster binding are accessible", func(t *testing.T) {
-			t.Skip("TODO: implement")
 			t.Parallel()
 
 			spicedb, kube, k2k := setupTest(ctx, t, port)
+
+			// Create the original namespace and map it
+			origNamespace := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-namespace",
+				},
+			}
+			kube.AddOrReplace(origNamespace)
+			k2k.ObjectAddedOrChanged(ctx, origNamespace)
 
 			clusterRole := &rbacv1.ClusterRole{
 				ObjectMeta: metav1.ObjectMeta{
@@ -835,7 +843,6 @@ func TestMapper(t *testing.T) {
 
 			kube.AddOrReplace(clusterRole)
 			kube.AddOrReplace(clusterBinding)
-
 			k2k.ObjectAddedOrChanged(ctx, clusterRole)
 			k2k.ObjectAddedOrChanged(ctx, clusterBinding)
 
