@@ -21,6 +21,7 @@ import (
 
 	sink "github.com/project-kessel/kube-kessel-sync/internal/sink"
 	rbacv1 "k8s.io/api/rbac/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/workqueue"
@@ -152,6 +153,7 @@ func (r *KesselSyncReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&rbacv1.ClusterRoleBinding{}, myHandler).
 		Watches(&rbacv1.Role{}, myHandler).
 		Watches(&rbacv1.RoleBinding{}, myHandler).
+		Watches(&corev1.Namespace{}, myHandler).
 		Named("sync").
 		Complete(r)
 }
