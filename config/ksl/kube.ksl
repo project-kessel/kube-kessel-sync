@@ -35,7 +35,6 @@ type knamespace {
 
 type configmap {
     relation knamespace: [ExactlyOne knamespace]
-    relation cluster_resource: [ExactlyOne configmap]
     relation role_binding: [Any rbac.role_binding]
 
     relation get: role_binding.kubernetes_configmaps_get or knamespace.configmaps_get or cluster_resource.get
@@ -44,7 +43,6 @@ type configmap {
 
 type pod {
     relation knamespace: [ExactlyOne knamespace]
-    relation cluster_resource: [ExactlyOne pod]
     relation role_binding: [Any rbac.role_binding]
 
     relation get: role_binding.kubernetes_pods_get or knamespace.pods_get or cluster_resource.get

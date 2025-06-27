@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	spicedbv1 "github.com/authzed/authzed-go/proto/authzed/api/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -195,7 +196,7 @@ func (m *KubeRbacToKessel) MapRole(ctx context.Context, role *rbacv1.Role) error
 	// with what resources should be bound given resourcenames in the role-rules,
 	// and then add/remove the relationships as needed.
 	// For POC, we'll continue to just remove and recreate like we do for Roles.
-	bindingIds, err := m.getBindingIds(ctx, roleResourceId)
+	bindingIds, err := m.getKesselBindingIds(ctx, roleResourceId)
 	if err != nil {
 		return fmt.Errorf("failed to get binding IDs for Role %s/%s: %w", role.Namespace, role.Name, err)
 	}
@@ -269,7 +270,7 @@ func (m *KubeRbacToKessel) MapRole(ctx context.Context, role *rbacv1.Role) error
 	return nil
 }
 
-func (m *KubeRbacToKessel) getBindingIds(ctx context.Context, kubeRoleId *ResourceId) ([]string, error) {
+func (m *KubeRbacToKessel) getKesselBindingIds(ctx context.Context, kubeRoleId *ResourceId) ([]string, error) {
 	bindingIds := []string{}
 	err := forEach(
 		func() (spicedbv1.PermissionsService_LookupSubjectsClient, error) {
@@ -547,7 +548,7 @@ func (m *KubeRbacToKessel) MapClusterRole(ctx context.Context, clusterRole *rbac
 	// with what resources should be bound given resourcenames in the role-rules,
 	// and then add/remove the relationships as needed.
 	// For POC, we'll continue to just remove and recreate like we do for Roles.
-	bindingIds, err := m.getBindingIds(ctx, roleResourceId)
+	bindingIds, err := m.getKesselBindingIds(ctx, roleResourceId)
 	if err != nil {
 		return fmt.Errorf("failed to get binding IDs for ClusterRole %s: %w", clusterRole.Name, err)
 	}
@@ -643,8 +644,10 @@ func (m *KubeRbacToKessel) MapClusterRoleBinding(ctx context.Context, clusterRol
 	log.Info("Deleting previous relationships for ClusterRoleBinding", "name", clusterRoleBinding.Name)
 	m.deleteClusterBindingRelationships(ctx, clusterRoleBinding)
 
+	kubeBindingId := NewClusterResourceId(m.ClusterId, clusterRoleBinding.Name)
+
 	principalIds := m.convertSubjectsToPrincipalIds(clusterRoleBinding.Subjects)
-	updates, err := m.getClusterBindingUpdates(ctx, clusterRole, NewClusterResourceId(m.ClusterId, clusterRoleBinding.Name), principalIds)
+	updates, err := m.getClusterBindingUpdates(ctx, clusterRole, kubeBindingId, principalIds)
 	if err != nil {
 		log.Error(err, "Failed to map ClusterRoleBinding", "name", clusterRoleBinding.Name)
 		return fmt.Errorf("failed to map ClusterRoleBinding %s: %w", clusterRoleBinding.Name, err)
@@ -837,6 +840,17 @@ func (m *KubeRbacToKessel) getClusterBindingUpdates(ctx context.Context, cluster
 	roleResourceId := NewClusterResourceId(m.ClusterId, clusterRole.Name)
 	updates := []*spicedbv1.RelationshipUpdate{}
 
+	// Get all existing namespaces once if we need them for resource name bindings
+	var namespaces []string
+	var err error
+	if m.clusterRoleHasResourceNames(clusterRole) {
+		namespaces, err = m.getNamespaces(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get existing namespaces: %w", err)
+		}
+		log.Info("Found existing namespaces for resource name binding", "namespaceCount", len(namespaces), "namespaces", namespaces)
+	}
+
 	// For each rule in the cluster role, create a binding to that RBAC role.
 	// Then, attach each subject to that binding.
 	// We explode the binding into a binding per role-rule combination, because each role-rule
@@ -849,7 +863,7 @@ func (m *KubeRbacToKessel) getClusterBindingUpdates(ctx context.Context, cluster
 		rbacBindingId := kubeBindingId.WithSegment(rI)
 
 		// Track that this binding relates to the kubernetes binding for lookups later.
-		// See: deleteBindingRelationships
+		// See: deleteClusterBindingRelationships
 		updates = append(updates, relationshipTouch(&spicedbv1.ObjectReference{
 			ObjectType: "kubernetes/role_binding",
 			ObjectId:   kubeBindingId.String(),
@@ -872,20 +886,63 @@ func (m *KubeRbacToKessel) getClusterBindingUpdates(ctx context.Context, cluster
 			},
 		}))
 
-		// Create a relationship from the cluster to this binding
-		// Cluster roles are bound at the cluster level (kubernetes/cluster)
-		resourceType := "kubernetes/cluster"
-		resourceId := m.ClusterId
+		// Handle resource names if specified
+		if len(rule.ResourceNames) > 0 {
+			// If resource names are specified, create denormalized relationships to track
+			// which specific resources are bound at the cluster level
+			for _, resource := range rule.Resources {
+				for _, resourceName := range rule.ResourceNames {
+					resourceType := fmt.Sprintf("kubernetes/%s", pluralToSingular(resource))
+					// Use empty namespace to indicate cluster-level resource name binding
+					resourceId := NewResourceId(m.ClusterId, "", resourceName)
 
-		updates = append(updates, relationshipTouch(&spicedbv1.ObjectReference{
-			ObjectType: resourceType,
-			ObjectId:   resourceId,
-		}, "t_role_binding", &spicedbv1.SubjectReference{
-			Object: &spicedbv1.ObjectReference{
-				ObjectType: "rbac/role_binding",
-				ObjectId:   rbacBindingId,
-			},
-		}))
+					// Create denormalized relationship to track this resource name binding
+					updates = append(updates, relationshipTouch(&spicedbv1.ObjectReference{
+						ObjectType: resourceType,
+						ObjectId:   resourceId.String(),
+					}, "t_role_binding", &spicedbv1.SubjectReference{
+						Object: &spicedbv1.ObjectReference{
+							ObjectType: "rbac/role_binding",
+							ObjectId:   rbacBindingId,
+						},
+					}))
+
+					// Create resource-level bindings for each existing namespace
+					for _, namespace := range namespaces {
+						// Create namespace-specific resource ID
+						namespaceResourceId := NewResourceId(m.ClusterId, namespace, resourceName)
+
+						// Create a relationship from the namespace-specific resource to the role binding
+						// This is what grants access to the specific resource in this namespace
+						updates = append(updates, relationshipTouch(&spicedbv1.ObjectReference{
+							ObjectType: resourceType,
+							ObjectId:   namespaceResourceId.String(),
+						}, "t_role_binding", &spicedbv1.SubjectReference{
+							Object: &spicedbv1.ObjectReference{
+								ObjectType: "rbac/role_binding",
+								ObjectId:   rbacBindingId,
+							},
+						}))
+
+						log.Info("Created resource-level binding", "resourceType", resourceType, "resourceId", namespaceResourceId.String(), "bindingId", rbacBindingId, "namespace", namespace)
+					}
+				}
+			}
+		} else {
+			// If no resource names, bind to the cluster level (grants access to all resources of the specified type)
+			resourceType := "kubernetes/cluster"
+			resourceId := m.ClusterId
+
+			updates = append(updates, relationshipTouch(&spicedbv1.ObjectReference{
+				ObjectType: resourceType,
+				ObjectId:   resourceId,
+			}, "t_role_binding", &spicedbv1.SubjectReference{
+				Object: &spicedbv1.ObjectReference{
+					ObjectType: "rbac/role_binding",
+					ObjectId:   rbacBindingId,
+				},
+			}))
+		}
 
 		// Create a relationship from the binding to the role-rule
 		updates = append(updates, relationshipTouch(&spicedbv1.ObjectReference{
@@ -1005,6 +1062,14 @@ func (m *KubeRbacToKessel) MapNamespace(ctx context.Context, namespace *corev1.N
 		},
 	}))
 
+	// Process resource name bindings for this new namespace
+	resourceNameUpdates, err := m.processResourceNameBindingsForNamespace(ctx, namespace.Name)
+	if err != nil {
+		log.Error(err, "Failed to process resource name bindings for namespace", "namespace", namespace.Name)
+		return fmt.Errorf("failed to process resource name bindings for namespace %s: %w", namespace.Name, err)
+	}
+	updates = append(updates, resourceNameUpdates...)
+
 	if len(updates) > 0 {
 		_, err := m.SpiceDb.WriteRelationships(ctx, &spicedbv1.WriteRelationshipsRequest{
 			Updates: updates,
@@ -1017,4 +1082,165 @@ func (m *KubeRbacToKessel) MapNamespace(ctx context.Context, namespace *corev1.N
 	}
 
 	return nil
+}
+
+func (m *KubeRbacToKessel) processResourceNameBindingsForNamespace(ctx context.Context, namespace string) ([]*spicedbv1.RelationshipUpdate, error) {
+	log := logf.FromContext(ctx)
+	updates := []*spicedbv1.RelationshipUpdate{}
+
+	// Look up all resource-level t_role_binding relationships using the prefix {cluster_id}//
+	// This finds all cluster-level resource name bindings
+	prefix := fmt.Sprintf("%s//", m.ClusterId)
+
+	err := forEach(
+		func() (spicedbv1.PermissionsService_ReadRelationshipsClient, error) {
+			return m.SpiceDb.ReadRelationships(ctx, &spicedbv1.ReadRelationshipsRequest{
+				Consistency: fullyConsistent,
+				RelationshipFilter: &spicedbv1.RelationshipFilter{
+					OptionalResourceIdPrefix: prefix,
+					OptionalRelation:         "t_role_binding",
+				},
+			})
+		},
+		func(response *spicedbv1.ReadRelationshipsResponse) error {
+			// Extract the binding ID from the relationship
+			bindingId := response.Relationship.Subject.Object.ObjectId
+
+			// Parse the resource ID to get the resource type and name
+			resourceId := NewResourceIdFromString(response.Relationship.Resource.ObjectId)
+			if resourceId == nil {
+				log.Error(nil, "Failed to parse resource ID", "resourceId", response.Relationship.Resource.ObjectId)
+				return nil
+			}
+
+			// Get the subjects (principals) for this binding
+			subjects, err := m.getRbacBindingSubjects(ctx, bindingId)
+			if err != nil {
+				log.Error(err, "Failed to get subjects for binding", "bindingId", bindingId)
+				return err
+			}
+
+			// Create namespace-specific resource binding
+			// The resource ID format is {cluster_id}/{namespace}/{resource_name}
+			namespaceResourceId := NewResourceId(m.ClusterId, namespace, resourceId.Name)
+
+			// Create relationships from the namespace-specific resource to each subject
+			for _, subjectId := range subjects {
+				updates = append(updates, relationshipTouch(&spicedbv1.ObjectReference{
+					ObjectType: response.Relationship.Resource.ObjectType,
+					ObjectId:   namespaceResourceId.String(),
+				}, "t_subject", &spicedbv1.SubjectReference{
+					Object: &spicedbv1.ObjectReference{
+						ObjectType: "rbac/principal",
+						ObjectId:   subjectId,
+					},
+				}))
+			}
+
+			return nil
+		},
+	)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to process resource name bindings: %w", err)
+	}
+
+	log.Info("Processed resource name bindings for namespace", "namespace", namespace, "updatesCount", len(updates))
+	return updates, nil
+}
+
+func (m *KubeRbacToKessel) cleanupResourceNameBindingsForClusterRole(ctx context.Context, roleResourceId *ResourceId) error {
+	log := logf.FromContext(ctx)
+
+	// Get all bindings for this cluster role
+	bindingIds, err := m.getKesselBindingIds(ctx, roleResourceId)
+	if err != nil {
+		return fmt.Errorf("failed to get binding IDs for cleanup: %w", err)
+	}
+
+	// For each binding, clean up any resource name bindings
+	for _, bindingId := range bindingIds {
+		// Delete resource name bindings for this specific binding
+		_, err := m.SpiceDb.DeleteRelationships(ctx, &spicedbv1.DeleteRelationshipsRequest{
+			RelationshipFilter: &spicedbv1.RelationshipFilter{
+				OptionalSubjectFilter: &spicedbv1.SubjectFilter{
+					SubjectType:       "rbac/role_binding",
+					OptionalSubjectId: bindingId,
+				},
+				OptionalResourceIdPrefix: fmt.Sprintf("%s//", m.ClusterId),
+			},
+		})
+		if err != nil {
+			log.Error(err, "Failed to delete resource name bindings", "bindingId", bindingId)
+			return fmt.Errorf("failed to delete resource name bindings for binding %s: %w", bindingId, err)
+		}
+	}
+
+	log.Info("Cleaned up resource name bindings for ClusterRole", "role", roleResourceId.String(), "bindingCount", len(bindingIds))
+	return nil
+}
+
+func (m *KubeRbacToKessel) cleanupResourceNameBindingsForClusterRoleBinding(ctx context.Context, kubeBindingId *ResourceId) error {
+	log := logf.FromContext(ctx)
+
+	// Get all bindings for this cluster role binding
+	bindingIds, err := m.getKesselBindingIds(ctx, kubeBindingId)
+	if err != nil {
+		return fmt.Errorf("failed to get binding IDs for cleanup: %w", err)
+	}
+
+	// For each binding, clean up any resource name bindings
+	for _, bindingId := range bindingIds {
+		// Delete resource name bindings for this specific binding
+		_, err := m.SpiceDb.DeleteRelationships(ctx, &spicedbv1.DeleteRelationshipsRequest{
+			RelationshipFilter: &spicedbv1.RelationshipFilter{
+				OptionalSubjectFilter: &spicedbv1.SubjectFilter{
+					SubjectType:       "rbac/role_binding",
+					OptionalSubjectId: bindingId,
+				},
+				OptionalResourceIdPrefix: fmt.Sprintf("%s//", m.ClusterId),
+			},
+		})
+		if err != nil {
+			log.Error(err, "Failed to delete resource name bindings", "bindingId", bindingId)
+			return fmt.Errorf("failed to delete resource name bindings for binding %s: %w", bindingId, err)
+		}
+	}
+
+	log.Info("Cleaned up resource name bindings for ClusterRoleBinding", "binding", kubeBindingId.String(), "bindingCount", len(bindingIds))
+	return nil
+}
+
+func (m *KubeRbacToKessel) clusterRoleHasResourceNames(clusterRole *rbacv1.ClusterRole) bool {
+	for _, rule := range clusterRole.Rules {
+		if len(rule.ResourceNames) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *KubeRbacToKessel) getNamespaces(ctx context.Context) ([]string, error) {
+	namespaces := []string{}
+	err := forEach(
+		func() (spicedbv1.PermissionsService_ReadRelationshipsClient, error) {
+			return m.SpiceDb.ReadRelationships(ctx, &spicedbv1.ReadRelationshipsRequest{
+				Consistency: fullyConsistent,
+				RelationshipFilter: &spicedbv1.RelationshipFilter{
+					ResourceType:     "kubernetes/knamespace",
+					OptionalRelation: "t_cluster",
+				},
+			})
+		},
+		func(response *spicedbv1.ReadRelationshipsResponse) error {
+			// Extract namespace name from the resource ID (format: {cluster_id}/{namespace})
+			resourceId := response.Relationship.Resource.ObjectId
+			parts := strings.Split(resourceId, "/")
+			if len(parts) == 2 {
+				namespaces = append(namespaces, parts[1])
+			}
+			return nil
+		},
+	)
+	return namespaces, err
 }
