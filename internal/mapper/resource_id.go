@@ -35,12 +35,9 @@ func (r *ResourceId) GetName() string {
 	return r.Name
 }
 
-// String returns the full resource ID in the format cluster/namespace/name or cluster/name for cluster-scoped resources
+// String returns the full resource ID in the format cluster/namespace/name (namespace may be empty for cluster-scoped resources)
 func (r *ResourceId) String() string {
-	if r.Namespace != "" {
-		return fmt.Sprintf("%s/%s/%s", r.Cluster, r.Namespace, r.Name)
-	}
-	return fmt.Sprintf("%s/%s", r.Cluster, r.Name)
+	return fmt.Sprintf("%s/%s/%s", r.Cluster, r.Namespace, r.Name)
 }
 
 // WithSegment extends the resource ID with an additional segment
@@ -83,33 +80,23 @@ func NewResourceIdFromNamespacedName(cluster string, obj NamespacedName) *Resour
 	}
 }
 
-// NewResourceIdFromString creates a ResourceId by parsing a string in the format "cluster/namespace/name" or "cluster/name"
+// NewResourceIdFromString creates a ResourceId by parsing a string in the format "cluster/namespace/name" (namespace may be empty for cluster-scoped resources)
 // Any additional segments after the name are ignored
 func NewResourceIdFromString(resourceIdStr string) *ResourceId {
 	parts := strings.Split(resourceIdStr, "/")
 
-	// Need at least cluster and name
-	if len(parts) < 2 {
+	// Need at least cluster, namespace, and name (namespace may be empty)
+	if len(parts) < 3 {
 		return nil
 	}
 
 	cluster := parts[0]
+	namespace := parts[1]
+	name := parts[2]
 
-	// If we have 3+ parts, it's namespaced (cluster/namespace/name)
-	if len(parts) >= 3 {
-		namespace := parts[1]
-		name := parts[2]
-		return &ResourceId{
-			Cluster:   cluster,
-			Namespace: namespace,
-			Name:      name,
-		}
-	}
-
-	// If we have 2 parts, it's cluster-scoped (cluster/name)
-	name := parts[1]
 	return &ResourceId{
-		Cluster: cluster,
-		Name:    name,
+		Cluster:   cluster,
+		Namespace: namespace,
+		Name:      name,
 	}
 }

@@ -862,6 +862,111 @@ func TestMapper(t *testing.T) {
 				"kubernetes/knamespace", "test-cluster/new-namespace", "pods_list",
 				"rbac/principal", "kubernetes/test-user")
 		})
+
+		// Test to demonstrate the prefix collision bug
+		t.Run("clusterrole deletion should not affect namespaced role with same name", func(t *testing.T) {
+			t.Parallel()
+
+			spicedb, kube, k2k := setupTest(ctx, t, port)
+
+			// Create namespace for the role
+			testNamespace := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-namespace",
+				},
+			}
+			kube.AddOrReplace(testNamespace)
+			k2k.ObjectAddedOrChanged(ctx, testNamespace)
+
+			// 1. Add a role in namespace "test-namespace" with name "some-role"
+			role := &rbacv1.Role{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "some-role",
+					Namespace: "test-namespace",
+				},
+				Rules: []rbacv1.PolicyRule{
+					{
+						APIGroups: []string{""},
+						Resources: []string{"pods"},
+						Verbs:     []string{"get"},
+					},
+				},
+			}
+			binding := &rbacv1.RoleBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "some-binding",
+					Namespace: "test-namespace",
+				},
+				Subjects: []rbacv1.Subject{
+					{
+						Kind: "User",
+						Name: "test-user",
+					},
+				},
+				RoleRef: rbacv1.RoleRef{
+					APIGroup: rbacv1.GroupName,
+					Kind:     "Role",
+					Name:     role.Name,
+				},
+			}
+
+			kube.AddOrReplace(role)
+			kube.AddOrReplace(binding)
+			k2k.ObjectAddedOrChanged(ctx, role)
+			k2k.ObjectAddedOrChanged(ctx, binding)
+
+			// 2. Verify the user has access from the namespaced role
+			assertAccess(t, ctx, spicedb,
+				"kubernetes/knamespace", "test-cluster/test-namespace", "pods_get",
+				"rbac/principal", "kubernetes/test-user")
+
+			// 3. Add a clusterrole with name "test-namespace" (same as the namespace name)
+			// This should NOT affect the namespaced role above
+			clusterRole := &rbacv1.ClusterRole{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-namespace", // Same name as the namespace
+				},
+				Rules: []rbacv1.PolicyRule{
+					{
+						APIGroups: []string{""},
+						Resources: []string{"configmaps"},
+						Verbs:     []string{"get"},
+					},
+				},
+			}
+			clusterBinding := &rbacv1.ClusterRoleBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-cluster-binding",
+				},
+				Subjects: []rbacv1.Subject{
+					{
+						Kind: "User",
+						Name: "cluster-user",
+					},
+				},
+				RoleRef: rbacv1.RoleRef{
+					APIGroup: rbacv1.GroupName,
+					Kind:     "ClusterRole",
+					Name:     clusterRole.Name,
+				},
+			}
+
+			kube.AddOrReplace(clusterRole)
+			kube.AddOrReplace(clusterBinding)
+			k2k.ObjectAddedOrChanged(ctx, clusterRole)
+			k2k.ObjectAddedOrChanged(ctx, clusterBinding)
+
+			// 4. Assert that the access from the first role is still granted
+			// This should still work - the clusterrole should not have affected the namespaced role
+			assertAccess(t, ctx, spicedb,
+				"kubernetes/knamespace", "test-cluster/test-namespace", "pods_get",
+				"rbac/principal", "kubernetes/test-user")
+
+			// 5. Also verify the clusterrole works for the cluster user
+			assertAccess(t, ctx, spicedb,
+				"kubernetes/knamespace", "test-cluster/test-namespace", "configmaps_get",
+				"rbac/principal", "kubernetes/cluster-user")
+		})
 	})
 }
 
