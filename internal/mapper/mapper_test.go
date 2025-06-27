@@ -994,7 +994,6 @@ func TestMapper(t *testing.T) {
 
 		// Test clusterrole transition from no resource names to resource names
 		t.Run("clusterrole transition from no resource names to resource names", func(t *testing.T) {
-			t.Skip("TODO: not working")
 			t.Parallel()
 
 			spicedb, kube, k2k := setupTest(ctx, t, port)
@@ -1089,7 +1088,6 @@ func TestMapper(t *testing.T) {
 
 		// Test clusterrole transition from resource names to no resource names
 		t.Run("clusterrole transition from resource names to no resource names", func(t *testing.T) {
-			t.Skip("TODO: not working")
 			t.Parallel()
 
 			spicedb, kube, k2k := setupTest(ctx, t, port)
@@ -1185,7 +1183,6 @@ func TestMapper(t *testing.T) {
 
 		// Test that clusterrole changes only affect the changed clusterrole
 		t.Run("clusterrole changes only affect the changed clusterrole", func(t *testing.T) {
-			t.Skip("TODO: not working")
 			t.Parallel()
 
 			spicedb, kube, k2k := setupTest(ctx, t, port)

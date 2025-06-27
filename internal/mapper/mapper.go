@@ -897,6 +897,8 @@ func (m *KubeRbacToKessel) getClusterBindingUpdates(ctx context.Context, cluster
 					resourceId := NewResourceId(m.ClusterId, "", resourceName)
 
 					// Create denormalized relationship to track this resource name binding
+					// This is used when namespaces are added,
+					// so that we can easily lookup what resources to bind to in that namespace.
 					updates = append(updates, relationshipTouch(&spicedbv1.ObjectReference{
 						ObjectType: resourceType,
 						ObjectId:   resourceId.String(),
