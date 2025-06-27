@@ -1149,68 +1149,6 @@ func (m *KubeRbacToKessel) processResourceNameBindingsForNamespace(ctx context.C
 	return updates, nil
 }
 
-func (m *KubeRbacToKessel) cleanupResourceNameBindingsForClusterRole(ctx context.Context, roleResourceId *ResourceId) error {
-	log := logf.FromContext(ctx)
-
-	// Get all bindings for this cluster role
-	bindingIds, err := m.getKesselBindingIds(ctx, roleResourceId)
-	if err != nil {
-		return fmt.Errorf("failed to get binding IDs for cleanup: %w", err)
-	}
-
-	// For each binding, clean up any resource name bindings
-	for _, bindingId := range bindingIds {
-		// Delete resource name bindings for this specific binding
-		_, err := m.SpiceDb.DeleteRelationships(ctx, &spicedbv1.DeleteRelationshipsRequest{
-			RelationshipFilter: &spicedbv1.RelationshipFilter{
-				OptionalSubjectFilter: &spicedbv1.SubjectFilter{
-					SubjectType:       "rbac/role_binding",
-					OptionalSubjectId: bindingId,
-				},
-				OptionalResourceIdPrefix: fmt.Sprintf("%s//", m.ClusterId),
-			},
-		})
-		if err != nil {
-			log.Error(err, "Failed to delete resource name bindings", "bindingId", bindingId)
-			return fmt.Errorf("failed to delete resource name bindings for binding %s: %w", bindingId, err)
-		}
-	}
-
-	log.Info("Cleaned up resource name bindings for ClusterRole", "role", roleResourceId.String(), "bindingCount", len(bindingIds))
-	return nil
-}
-
-func (m *KubeRbacToKessel) cleanupResourceNameBindingsForClusterRoleBinding(ctx context.Context, kubeBindingId *ResourceId) error {
-	log := logf.FromContext(ctx)
-
-	// Get all bindings for this cluster role binding
-	bindingIds, err := m.getKesselBindingIds(ctx, kubeBindingId)
-	if err != nil {
-		return fmt.Errorf("failed to get binding IDs for cleanup: %w", err)
-	}
-
-	// For each binding, clean up any resource name bindings
-	for _, bindingId := range bindingIds {
-		// Delete resource name bindings for this specific binding
-		_, err := m.SpiceDb.DeleteRelationships(ctx, &spicedbv1.DeleteRelationshipsRequest{
-			RelationshipFilter: &spicedbv1.RelationshipFilter{
-				OptionalSubjectFilter: &spicedbv1.SubjectFilter{
-					SubjectType:       "rbac/role_binding",
-					OptionalSubjectId: bindingId,
-				},
-				OptionalResourceIdPrefix: fmt.Sprintf("%s//", m.ClusterId),
-			},
-		})
-		if err != nil {
-			log.Error(err, "Failed to delete resource name bindings", "bindingId", bindingId)
-			return fmt.Errorf("failed to delete resource name bindings for binding %s: %w", bindingId, err)
-		}
-	}
-
-	log.Info("Cleaned up resource name bindings for ClusterRoleBinding", "binding", kubeBindingId.String(), "bindingCount", len(bindingIds))
-	return nil
-}
-
 func (m *KubeRbacToKessel) clusterRoleHasResourceNames(clusterRole *rbacv1.ClusterRole) bool {
 	for _, rule := range clusterRole.Rules {
 		if len(rule.ResourceNames) > 0 {
