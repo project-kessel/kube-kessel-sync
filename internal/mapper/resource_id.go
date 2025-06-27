@@ -23,7 +23,7 @@ import (
 
 type ResourceId struct {
 	Cluster   string
-	Namespace string
+	Namespace string // Optional for cluster-scoped resources
 	Name      string
 }
 
@@ -35,9 +35,12 @@ func (r *ResourceId) GetName() string {
 	return r.Name
 }
 
-// String returns the full resource ID in the format cluster/namespace/name
+// String returns the full resource ID in the format cluster/namespace/name or cluster/name for cluster-scoped resources
 func (r *ResourceId) String() string {
-	return fmt.Sprintf("%s/%s/%s", r.Cluster, r.Namespace, r.Name)
+	if r.Namespace != "" {
+		return fmt.Sprintf("%s/%s/%s", r.Cluster, r.Namespace, r.Name)
+	}
+	return fmt.Sprintf("%s/%s", r.Cluster, r.Name)
 }
 
 // WithSegment extends the resource ID with an additional segment
@@ -63,6 +66,14 @@ func NewResourceId(cluster, namespace, name string) *ResourceId {
 	}
 }
 
+// NewClusterResourceId creates a new ResourceId for cluster-scoped resources
+func NewClusterResourceId(cluster, name string) *ResourceId {
+	return &ResourceId{
+		Cluster: cluster,
+		Name:    name,
+	}
+}
+
 // NewResourceIdFromNamespacedName creates a ResourceId from a NamespacedName object
 func NewResourceIdFromNamespacedName(cluster string, obj NamespacedName) *ResourceId {
 	return &ResourceId{
@@ -72,23 +83,33 @@ func NewResourceIdFromNamespacedName(cluster string, obj NamespacedName) *Resour
 	}
 }
 
-// NewResourceIdFromString creates a ResourceId by parsing a string in the format "cluster/namespace/name"
+// NewResourceIdFromString creates a ResourceId by parsing a string in the format "cluster/namespace/name" or "cluster/name"
 // Any additional segments after the name are ignored
 func NewResourceIdFromString(resourceIdStr string) *ResourceId {
 	parts := strings.Split(resourceIdStr, "/")
 
-	// Need at least cluster, namespace, and name
-	if len(parts) < 3 {
+	// Need at least cluster and name
+	if len(parts) < 2 {
 		return nil
 	}
 
 	cluster := parts[0]
-	namespace := parts[1]
-	name := parts[2]
 
+	// If we have 3+ parts, it's namespaced (cluster/namespace/name)
+	if len(parts) >= 3 {
+		namespace := parts[1]
+		name := parts[2]
+		return &ResourceId{
+			Cluster:   cluster,
+			Namespace: namespace,
+			Name:      name,
+		}
+	}
+
+	// If we have 2 parts, it's cluster-scoped (cluster/name)
+	name := parts[1]
 	return &ResourceId{
-		Cluster:   cluster,
-		Namespace: namespace,
-		Name:      name,
+		Cluster: cluster,
+		Name:    name,
 	}
 }
