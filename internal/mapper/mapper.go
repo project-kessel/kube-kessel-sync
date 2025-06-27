@@ -1101,6 +1101,9 @@ func (m *KubeRbacToKessel) processResourceNameBindingsForNamespace(ctx context.C
 				RelationshipFilter: &spicedbv1.RelationshipFilter{
 					OptionalResourceIdPrefix: prefix,
 					OptionalRelation:         "t_role_binding",
+					OptionalSubjectFilter: &spicedbv1.SubjectFilter{
+						SubjectType: "rbac/role_binding",
+					},
 				},
 			})
 		},
@@ -1115,29 +1118,20 @@ func (m *KubeRbacToKessel) processResourceNameBindingsForNamespace(ctx context.C
 				return nil
 			}
 
-			// Get the subjects (principals) for this binding
-			subjects, err := m.getRbacBindingSubjects(ctx, bindingId)
-			if err != nil {
-				log.Error(err, "Failed to get subjects for binding", "bindingId", bindingId)
-				return err
-			}
-
 			// Create namespace-specific resource binding
 			// The resource ID format is {cluster_id}/{namespace}/{resource_name}
 			namespaceResourceId := NewResourceId(m.ClusterId, namespace, resourceId.Name)
 
-			// Create relationships from the namespace-specific resource to each subject
-			for _, subjectId := range subjects {
-				updates = append(updates, relationshipTouch(&spicedbv1.ObjectReference{
-					ObjectType: response.Relationship.Resource.ObjectType,
-					ObjectId:   namespaceResourceId.String(),
-				}, "t_subject", &spicedbv1.SubjectReference{
-					Object: &spicedbv1.ObjectReference{
-						ObjectType: "rbac/principal",
-						ObjectId:   subjectId,
-					},
-				}))
-			}
+			// Create the namespace-specific resource binding relationship
+			updates = append(updates, relationshipTouch(&spicedbv1.ObjectReference{
+				ObjectType: response.Relationship.Resource.ObjectType,
+				ObjectId:   namespaceResourceId.String(),
+			}, "t_role_binding", &spicedbv1.SubjectReference{
+				Object: &spicedbv1.ObjectReference{
+					ObjectType: "rbac/role_binding",
+					ObjectId:   bindingId,
+				},
+			}))
 
 			return nil
 		},
