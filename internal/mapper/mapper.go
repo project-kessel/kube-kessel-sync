@@ -248,7 +248,7 @@ func (m *KubeRbacToKessel) MapRole(ctx context.Context, role *rbacv1.Role) error
 					return fmt.Errorf("failed to delete relationships for Role Binding %s: %w", resourceId.String(), err)
 				}
 
-				bindingUpdates, err := m.getNamespaceBindingUpdates(ctx, role, resourceId, subjects)
+				bindingUpdates, err := m.getNamespaceBindingUpdates(ctx, roleResourceId, role.Rules, resourceId, subjects)
 				if err != nil {
 					return fmt.Errorf("failed to get namespace binding updates for Role Binding %s: %w", resourceId.String(), err)
 				}
@@ -321,23 +321,39 @@ func (m *KubeRbacToKessel) MapRoleBinding(ctx context.Context, binding *rbacv1.R
 	log := logf.FromContext(ctx)
 	log.Info("Mapping RoleBinding", "name", binding.Name, "namespace", binding.Namespace)
 
-	// Lookup the referenced role
-	role := &rbacv1.Role{}
-	if err := m.Kube.Get(ctx, client.ObjectKey{
-		Name:      binding.RoleRef.Name,
-		Namespace: binding.Namespace,
-	}, role); err != nil {
-		log.Error(err, "Failed to get Role for RoleBinding", "name", binding.Name, "namespace", binding.Namespace)
-		return fmt.Errorf("failed to get Role %s/%s for RoleBinding %s/%s: %w", binding.Namespace, binding.RoleRef.Name, binding.Namespace, binding.Name, err)
+	var (
+		roleResourceId *ResourceId
+		rules          []rbacv1.PolicyRule
+	)
+
+	if strings.EqualFold(binding.RoleRef.Kind, "ClusterRole") {
+		// Reference to a ClusterRole
+		clusterRole := &rbacv1.ClusterRole{}
+		if err := m.Kube.Get(ctx, client.ObjectKey{Name: binding.RoleRef.Name}, clusterRole); err != nil {
+			log.Error(err, "Failed to get ClusterRole for RoleBinding", "name", binding.Name, "namespace", binding.Namespace)
+			return fmt.Errorf("failed to get ClusterRole %s for RoleBinding %s/%s: %w", binding.RoleRef.Name, binding.Namespace, binding.Name, err)
+		}
+
+		rules = clusterRole.Rules
+		roleResourceId = NewClusterResourceId(m.ClusterId, clusterRole.Name)
+	} else {
+		// Assume Role (namespaced)
+		role := &rbacv1.Role{}
+		if err := m.Kube.Get(ctx, client.ObjectKey{Name: binding.RoleRef.Name, Namespace: binding.Namespace}, role); err != nil {
+			log.Error(err, "Failed to get Role for RoleBinding", "name", binding.Name, "namespace", binding.Namespace)
+			return fmt.Errorf("failed to get Role %s/%s for RoleBinding %s/%s: %w", binding.Namespace, binding.RoleRef.Name, binding.Namespace, binding.Name, err)
+		}
+
+		rules = role.Rules
+		roleResourceId = NewResourceIdFromNamespacedName(m.ClusterId, role)
 	}
 
 	// Like with roles, delete all possible previous binding relationships
-	// TODO: Could diff and compare to be more efficient and make atomic
 	log.Info("Deleting previous relationships for RoleBinding", "name", binding.Name, "namespace", binding.Namespace)
 	m.deleteBindingRelationships(ctx, binding)
 
 	principalIds := m.convertSubjectsToPrincipalIds(binding.Subjects)
-	updates, err := m.getNamespaceBindingUpdates(ctx, role, NewResourceIdFromNamespacedName(m.ClusterId, binding), principalIds)
+	updates, err := m.getNamespaceBindingUpdates(ctx, roleResourceId, rules, NewResourceIdFromNamespacedName(m.ClusterId, binding), principalIds)
 	if err != nil {
 		log.Error(err, "Failed to map RoleBinding", "name", binding.Name, "namespace", binding.Namespace)
 		return fmt.Errorf("failed to map RoleBinding %s/%s: %w", binding.Namespace, binding.Name, err)
@@ -345,7 +361,6 @@ func (m *KubeRbacToKessel) MapRoleBinding(ctx context.Context, binding *rbacv1.R
 
 	// Updates collected, write them to SpiceDB
 	if len(updates) > 0 {
-		log.Info("Writing RoleBinding relationships to SpiceDB", "updatesCount", len(updates))
 		_, err := m.SpiceDb.WriteRelationships(ctx, &spicedbv1.WriteRelationshipsRequest{
 			Updates: updates,
 		})
@@ -374,26 +389,22 @@ func (m *KubeRbacToKessel) convertSubjectsToPrincipalIds(subjects []rbacv1.Subje
 	return principalIds
 }
 
-// Given a Role and a corresponding Kube RoleBinding, generate binding updates.
-func (m *KubeRbacToKessel) getNamespaceBindingUpdates(ctx context.Context, role *rbacv1.Role, kubeBindingId *ResourceId, principals []string) ([]*spicedbv1.RelationshipUpdate, error) {
+// getNamespaceBindingUpdates generates binding updates for a namespaced RoleBinding to either a Role or ClusterRole.
+// It is parameterised by the set of policy rules and the role's ResourceID, allowing callers to remain agnostic
+// to whether the underlying RBAC object is a Role or ClusterRole.
+func (m *KubeRbacToKessel) getNamespaceBindingUpdates(ctx context.Context, roleResourceId *ResourceId, rules []rbacv1.PolicyRule, kubeBindingId *ResourceId, principals []string) ([]*spicedbv1.RelationshipUpdate, error) {
 	log := logf.FromContext(ctx)
 
-	roleResourceId := NewResourceIdFromNamespacedName(m.ClusterId, role)
 	updates := []*spicedbv1.RelationshipUpdate{}
 
-	// For each rule in the role, create a binding to that RBAC role.
-	// Then, attach each subject to that binding.
-	// We explode the binding into a binding per role-rule combination, because each role-rule
-	// maybe have a different target resource, due to resource name being a property of the rule.
-	for rI, rule := range role.Rules {
+	// For each rule, create a binding to the RBAC role-rule and attach subjects.
+	for rI, rule := range rules {
 		log.Info("Processing Role Rule", "apiGroups", rule.APIGroups, "resources", rule.Resources, "verbs", rule.Verbs)
 
-		// ID the RoleBinding after the role's kube cluster, namespace, role name,
-		// and the rule's index within the Role.
+		// Identify the RBAC binding ID (one per role rule).
 		rbacBindingId := kubeBindingId.WithSegment(rI)
 
-		// Track that this binding relates to the kubernetes binding for lookups later.
-		// See: deleteBindingRelationships
+		// Track that this binding relates to the kube RoleBinding for later look-ups.
 		updates = append(updates, relationshipTouch(&spicedbv1.ObjectReference{
 			ObjectType: "kubernetes/role_binding",
 			ObjectId:   kubeBindingId.String(),
@@ -404,8 +415,7 @@ func (m *KubeRbacToKessel) getNamespaceBindingUpdates(ctx context.Context, role 
 			},
 		}))
 
-		// Now also track from the kube role to the binding,
-		// so we can traverse from the kube role to rbac bindings
+		// Track from the kube role to the binding so we can traverse later.
 		updates = append(updates, relationshipTouch(&spicedbv1.ObjectReference{
 			ObjectType: "kubernetes/role",
 			ObjectId:   roleResourceId.String(),
@@ -416,12 +426,9 @@ func (m *KubeRbacToKessel) getNamespaceBindingUpdates(ctx context.Context, role 
 			},
 		}))
 
-		// Create a relationship from the resource(s) to this binding
-		// Where a role gets bound in RBAC depends on:
-		// - the referenced role's rule's resource names (if specified, bind to specific resources)
-		// - the role binding's namespace (if no resource names, bind to namespace)
+		// Decide where to attach the binding based on the rule's ResourceNames.
 		if len(rule.ResourceNames) > 0 {
-			// If resource names are specified, bind to each specific resource
+			// Resource-level binding.
 			for _, resource := range rule.Resources {
 				for _, resourceName := range rule.ResourceNames {
 					resourceType := fmt.Sprintf("kubernetes/%s", pluralToSingular(resource))
@@ -439,7 +446,7 @@ func (m *KubeRbacToKessel) getNamespaceBindingUpdates(ctx context.Context, role 
 				}
 			}
 		} else {
-			// If no resource names, bind to the namespace (grants access to all resources of the specified type)
+			// Namespace-level binding.
 			resourceType := "kubernetes/knamespace"
 			resourceId := fmt.Sprintf("%s/%s", m.ClusterId, kubeBindingId.Namespace)
 
@@ -454,7 +461,7 @@ func (m *KubeRbacToKessel) getNamespaceBindingUpdates(ctx context.Context, role 
 			}))
 		}
 
-		// Create a relationship from the binding to the role-rule
+		// Binding -> role-rule.
 		updates = append(updates, relationshipTouch(&spicedbv1.ObjectReference{
 			ObjectType: "rbac/role_binding",
 			ObjectId:   rbacBindingId,
@@ -465,7 +472,7 @@ func (m *KubeRbacToKessel) getNamespaceBindingUpdates(ctx context.Context, role 
 			},
 		}))
 
-		// Create relationships from the binding to each subject
+		// Binding -> subjects.
 		for _, principalId := range principals {
 			updates = append(updates, relationshipTouch(&spicedbv1.ObjectReference{
 				ObjectType: "rbac/role_binding",

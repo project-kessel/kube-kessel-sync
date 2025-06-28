@@ -1,7 +1,7 @@
 ---
-description: How to run specific tests by name or pattern.
+description: 
 globs: 
-alwaysApply: false
+alwaysApply: true
 ---
 This project uses nested Go tests. To run a speciifc test, the argument to -run should follow this pattern:
 
