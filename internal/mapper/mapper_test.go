@@ -1841,6 +1841,127 @@ func TestMapper(t *testing.T) {
 				"kubernetes/configmap", "test-cluster/test-namespace/specific-configmap", "get",
 				"rbac/principal", "kubernetes/test-user")
 		})
+
+		t.Run("clusterrole deletion with resource names cleans up all relationships", func(t *testing.T) {
+			spicedb, kube, k2k := setupTest(ctx, t, port)
+
+			// Create namespace so that namespace-specific resource bindings are generated
+			namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "test-namespace"}}
+			kube.AddOrReplace(namespace)
+			k2k.ObjectAddedOrChanged(ctx, namespace)
+
+			// 1. Create ClusterRole with resource names (resource-level access)
+			clusterRole := &rbacv1.ClusterRole{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-cluster-role"},
+				Rules: []rbacv1.PolicyRule{{
+					APIGroups:     []string{""},
+					Resources:     []string{"configmaps"},
+					Verbs:         []string{"get"},
+					ResourceNames: []string{"specific-configmap"},
+				}},
+			}
+			// ClusterRoleBinding referencing the ClusterRole
+			clusterBinding := &rbacv1.ClusterRoleBinding{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-cluster-binding"},
+				Subjects:   []rbacv1.Subject{{Kind: "User", Name: "test-user"}},
+				RoleRef: rbacv1.RoleRef{
+					APIGroup: rbacv1.GroupName,
+					Kind:     "ClusterRole",
+					Name:     clusterRole.Name,
+				},
+			}
+
+			kube.AddOrReplace(clusterRole)
+			kube.AddOrReplace(clusterBinding)
+			k2k.ObjectAddedOrChanged(ctx, clusterRole)
+			k2k.ObjectAddedOrChanged(ctx, clusterBinding)
+
+			// Sanity check: user has access to the specific configmap
+			assertAccess(t, ctx, spicedb,
+				"kubernetes/configmap", "test-cluster/test-namespace/specific-configmap", "get",
+				"rbac/principal", "kubernetes/test-user")
+
+			// 2. Delete the ClusterRole
+			k2k.ObjectDeleted(ctx, clusterRole)
+
+			// Verify access is revoked
+			assertNoAccess(t, ctx, spicedb,
+				"kubernetes/configmap", "test-cluster/test-namespace/specific-configmap", "get",
+				"rbac/principal", "kubernetes/test-user")
+
+			// 3. Ensure no relationships remain for the relevant resource types
+			resourceTypes := []string{"kubernetes/role", "kubernetes/role_binding", "rbac/role", "rbac/role_binding", "kubernetes/configmap"}
+			for _, rt := range resourceTypes {
+				if c := countTotalRelationships(t, ctx, spicedb, rt); c != 0 {
+					t.Errorf("Expected 0 relationships for %s after clusterrole deletion, got %d", rt, c)
+				}
+			}
+		})
+
+		// Ensure deleting one ClusterRole does not delete another whose name shares a prefix.
+		// Regression test for overly broad prefix matching in DeleteClusterRole.
+		t.Run("clusterrole deletion does not affect role with overlapping prefix", func(t *testing.T) {
+			spicedb, kube, k2k := setupTest(ctx, t, port)
+
+			// Add a namespace so namespace-level permissions can be verified
+			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "test-ns"}}
+			kube.AddOrReplace(ns)
+			k2k.ObjectAddedOrChanged(ctx, ns)
+
+			// ClusterRole "foo"
+			fooRole := &rbacv1.ClusterRole{
+				ObjectMeta: metav1.ObjectMeta{Name: "foo"},
+				Rules:      []rbacv1.PolicyRule{{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"get"}}},
+			}
+			fooBinding := &rbacv1.ClusterRoleBinding{
+				ObjectMeta: metav1.ObjectMeta{Name: "foo-binding"},
+				Subjects:   []rbacv1.Subject{{Kind: "User", Name: "user-foo"}},
+				RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: fooRole.Name},
+			}
+
+			// ClusterRole "foobar"
+			foobarRole := &rbacv1.ClusterRole{
+				ObjectMeta: metav1.ObjectMeta{Name: "foobar"},
+				Rules:      []rbacv1.PolicyRule{{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"get"}}},
+			}
+			foobarBinding := &rbacv1.ClusterRoleBinding{
+				ObjectMeta: metav1.ObjectMeta{Name: "foobar-binding"},
+				Subjects:   []rbacv1.Subject{{Kind: "User", Name: "user-foobar"}},
+				RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: foobarRole.Name},
+			}
+
+			// Add to fake kube and mapper
+			for _, obj := range []client.Object{fooRole, fooBinding, foobarRole, foobarBinding} {
+				kube.AddOrReplace(obj)
+				k2k.ObjectAddedOrChanged(ctx, obj)
+			}
+
+			// Sanity: both users have access
+			assertAccess(t, ctx, spicedb,
+				"kubernetes/knamespace", "test-cluster/test-ns", "pods_get",
+				"rbac/principal", "kubernetes/user-foo")
+			assertAccess(t, ctx, spicedb,
+				"kubernetes/knamespace", "test-cluster/test-ns", "pods_get",
+				"rbac/principal", "kubernetes/user-foobar")
+
+			// Delete ClusterRole "foo"
+			k2k.ObjectDeleted(ctx, fooRole)
+
+			// user-foo should lose access
+			assertNoAccess(t, ctx, spicedb,
+				"kubernetes/knamespace", "test-cluster/test-ns", "pods_get",
+				"rbac/principal", "kubernetes/user-foo")
+
+			// user-foobar should still have access
+			assertAccess(t, ctx, spicedb,
+				"kubernetes/knamespace", "test-cluster/test-ns", "pods_get",
+				"rbac/principal", "kubernetes/user-foobar")
+
+			// Ensure relationships for foobar remain
+			if c := countTotalRelationships(t, ctx, spicedb, "rbac/role"); c == 0 {
+				t.Errorf("Expected rbac/role relationships for foobar to remain, got 0")
+			}
+		})
 	})
 	t.Run("roles", func(t *testing.T) {
 		t.Run("role deletion revokes namespace-level access", func(t *testing.T) {
