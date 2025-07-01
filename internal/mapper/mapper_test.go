@@ -1962,6 +1962,104 @@ func TestMapper(t *testing.T) {
 				t.Errorf("Expected rbac/role relationships for foobar to remain, got 0")
 			}
 		})
+
+		// Failing test stub: clusterrolebinding deletion should revoke access and clean tuples.
+		// Currently expected to FAIL until DeleteClusterRoleBinding is implemented.
+		t.Run("clusterrolebinding deletion revokes cluster-level access", func(t *testing.T) {
+			spicedb, kube, k2k := setupTest(ctx, t, port)
+
+			// Pre-create a namespace so access can be checked.
+			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "del-ns"}}
+			kube.AddOrReplace(ns)
+			k2k.ObjectAddedOrChanged(ctx, ns)
+
+			clusterRole := &rbacv1.ClusterRole{
+				ObjectMeta: metav1.ObjectMeta{Name: "del-cr"},
+				Rules:      []rbacv1.PolicyRule{{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"get"}}},
+			}
+			clusterBinding := &rbacv1.ClusterRoleBinding{
+				ObjectMeta: metav1.ObjectMeta{Name: "del-binding"},
+				Subjects:   []rbacv1.Subject{{Kind: "User", Name: "target-user"}},
+				RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: clusterRole.Name},
+			}
+
+			for _, obj := range []client.Object{clusterRole, clusterBinding} {
+				kube.AddOrReplace(obj)
+				k2k.ObjectAddedOrChanged(ctx, obj)
+			}
+
+			// Sanity: user has access
+			assertAccess(t, ctx, spicedb,
+				"kubernetes/knamespace", "test-cluster/del-ns", "pods_get",
+				"rbac/principal", "kubernetes/target-user")
+
+			// Delete the binding
+			k2k.ObjectDeleted(ctx, clusterBinding)
+
+			// Expect access revoked
+			assertNoAccess(t, ctx, spicedb,
+				"kubernetes/knamespace", "test-cluster/del-ns", "pods_get",
+				"rbac/principal", "kubernetes/target-user")
+
+			// Expect zero tuples for these resource types
+			for _, rt := range []string{"kubernetes/role_binding", "rbac/role_binding"} {
+				if c := countTotalRelationships(t, ctx, spicedb, rt); c != 0 {
+					t.Errorf("expected 0 relationships for %s after clusterrolebinding deletion, got %d", rt, c)
+				}
+			}
+		})
+
+		// Failing test: deleting a clusterrolebinding should not delete the underlying ClusterRole.
+		// After deleting first binding, creating a second binding should succeed and grant access.
+		t.Run("clusterrolebinding deletion allows new binding to same role", func(t *testing.T) {
+			spicedb, kube, k2k := setupTest(ctx, t, port)
+
+			// Namespace for checks
+			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "prefix-ns"}}
+			kube.AddOrReplace(ns)
+			k2k.ObjectAddedOrChanged(ctx, ns)
+
+			clusterRole := &rbacv1.ClusterRole{
+				ObjectMeta: metav1.ObjectMeta{Name: "keep-role"},
+				Rules:      []rbacv1.PolicyRule{{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"get"}}},
+			}
+			binding1 := &rbacv1.ClusterRoleBinding{
+				ObjectMeta: metav1.ObjectMeta{Name: "bind-1"},
+				Subjects:   []rbacv1.Subject{{Kind: "User", Name: "user1"}},
+				RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: clusterRole.Name},
+			}
+
+			kube.AddOrReplace(clusterRole)
+			kube.AddOrReplace(binding1)
+			k2k.ObjectAddedOrChanged(ctx, clusterRole)
+			k2k.ObjectAddedOrChanged(ctx, binding1)
+
+			// user1 has access
+			assertAccess(t, ctx, spicedb,
+				"kubernetes/knamespace", "test-cluster/prefix-ns", "pods_get",
+				"rbac/principal", "kubernetes/user1")
+
+			// Delete first binding
+			k2k.ObjectDeleted(ctx, binding1)
+
+			assertNoAccess(t, ctx, spicedb,
+				"kubernetes/knamespace", "test-cluster/prefix-ns", "pods_get",
+				"rbac/principal", "kubernetes/user1")
+
+			// Create second binding referencing same role
+			binding2 := &rbacv1.ClusterRoleBinding{
+				ObjectMeta: metav1.ObjectMeta{Name: "bind-2"},
+				Subjects:   []rbacv1.Subject{{Kind: "User", Name: "user2"}},
+				RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: clusterRole.Name},
+			}
+			kube.AddOrReplace(binding2)
+			k2k.ObjectAddedOrChanged(ctx, binding2)
+
+			// user2 should now have access, proving clusterRole still exists
+			assertAccess(t, ctx, spicedb,
+				"kubernetes/knamespace", "test-cluster/prefix-ns", "pods_get",
+				"rbac/principal", "kubernetes/user2")
+		})
 	})
 	t.Run("roles", func(t *testing.T) {
 		t.Run("role deletion revokes namespace-level access", func(t *testing.T) {
