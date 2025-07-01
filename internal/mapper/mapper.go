@@ -89,7 +89,7 @@ func (m *KubeRbacToKessel) ObjectDeleted(ctx context.Context, obj client.Object)
 	case *rbacv1.ClusterRole:
 		return m.DeleteClusterRole(ctx, o)
 	case *rbacv1.ClusterRoleBinding:
-		log.Info("ClusterRoleBinding deleted", "name", o.Name)
+		return m.DeleteClusterRoleBinding(ctx, o)
 	case *corev1.Namespace:
 		log.Info("Namespace deleted", "name", o.Name)
 	default:
@@ -1398,12 +1398,108 @@ func (m *KubeRbacToKessel) DeleteRoleBinding(ctx context.Context, binding *rbacv
 	return nil
 }
 
-// DeleteClusterRole handles the deletion of a Kubernetes ClusterRole by cleaning up all related RBAC objects and relationships
+// DeleteClusterRoleBinding cleans up all RBAC binding objects and relationships for a cluster-scoped binding.
+func (m *KubeRbacToKessel) DeleteClusterRoleBinding(ctx context.Context, binding *rbacv1.ClusterRoleBinding) error {
+	if binding == nil {
+		return fmt.Errorf("cluster role binding is nil")
+	}
+
+	log := logf.FromContext(ctx)
+	log.Info("Deleting ClusterRoleBinding", "name", binding.Name)
+
+	// Cluster-scoped kube binding id has empty namespace segment
+	kubeBindingId := NewClusterResourceId(m.ClusterId, binding.Name)
+
+	// Step 1: gather all rbac/role_binding ids attached to this kube binding (via t_rbac_binding)
+	var rbacBindingIds []string
+	err := streamutil.ForEach(
+		func() (spicedbv1.PermissionsService_ReadRelationshipsClient, error) {
+			return m.SpiceDb.ReadRelationships(ctx, &spicedbv1.ReadRelationshipsRequest{
+				Consistency: fullyConsistent,
+				RelationshipFilter: &spicedbv1.RelationshipFilter{
+					ResourceType:       "kubernetes/role_binding",
+					OptionalResourceId: kubeBindingId.String(),
+					OptionalRelation:   "t_rbac_binding",
+				},
+			})
+		},
+		func(res *spicedbv1.ReadRelationshipsResponse) error {
+			rbacBindingIds = append(rbacBindingIds, res.Relationship.Subject.Object.ObjectId)
+			return nil
+		},
+	)
+	if err != nil {
+		log.Error(err, "Failed to read rbac binding relationships for ClusterRoleBinding", "name", binding.Name)
+		return fmt.Errorf("failed to read rbac binding relationships for ClusterRoleBinding %s: %w", binding.Name, err)
+	}
+
+	log.Info("Found rbac bindings for ClusterRoleBinding", "name", binding.Name, "rbacBindingCount", len(rbacBindingIds))
+
+	// Step 2: delete t_rbac_binding tracking relationships on kube binding
+	_, err = m.SpiceDb.DeleteRelationships(ctx, &spicedbv1.DeleteRelationshipsRequest{
+		RelationshipFilter: &spicedbv1.RelationshipFilter{
+			ResourceType:       "kubernetes/role_binding",
+			OptionalResourceId: kubeBindingId.String(),
+			OptionalRelation:   "t_rbac_binding",
+		},
+	})
+	if err != nil {
+		log.Error(err, "Failed to delete t_rbac_binding tracking relationships", "name", binding.Name)
+		return fmt.Errorf("failed to delete t_rbac_binding tracking relationships for ClusterRoleBinding %s: %w", binding.Name, err)
+	}
+
+	// Step 3: delete all rbac/role_binding objects prefixed by kubeBindingId
+	rbacBindingPrefix := kubeBindingId.String() + "/"
+	_, err = m.SpiceDb.DeleteRelationships(ctx, &spicedbv1.DeleteRelationshipsRequest{
+		RelationshipFilter: &spicedbv1.RelationshipFilter{
+			ResourceType:             "rbac/role_binding",
+			OptionalResourceIdPrefix: rbacBindingPrefix,
+		},
+	})
+	if err != nil {
+		log.Error(err, "Failed to delete rbac role bindings for ClusterRoleBinding", "name", binding.Name, "prefix", rbacBindingPrefix)
+		return fmt.Errorf("failed to delete rbac role bindings for ClusterRoleBinding %s: %w", binding.Name, err)
+	}
+
+	// Step 4: delete all relationships where those rbacBindingIds are subjects
+	for _, id := range rbacBindingIds {
+		_, err = m.SpiceDb.DeleteRelationships(ctx, &spicedbv1.DeleteRelationshipsRequest{
+			RelationshipFilter: &spicedbv1.RelationshipFilter{
+				OptionalSubjectFilter: &spicedbv1.SubjectFilter{
+					SubjectType:       "rbac/role_binding",
+					OptionalSubjectId: id,
+				},
+			},
+		})
+		if err != nil {
+			log.Error(err, "Failed to delete subject relationships for rbac binding", "rbacBindingId", id)
+			return fmt.Errorf("failed to delete subject relationships for rbac binding %s: %w", id, err)
+		}
+	}
+
+	// Step 5: delete t_role_binding relationships from kubernetes/role (clusterRole) to this kube binding
+	_, err = m.SpiceDb.DeleteRelationships(ctx, &spicedbv1.DeleteRelationshipsRequest{
+		RelationshipFilter: &spicedbv1.RelationshipFilter{
+			OptionalSubjectFilter: &spicedbv1.SubjectFilter{
+				SubjectType:       "kubernetes/role_binding",
+				OptionalSubjectId: kubeBindingId.String(),
+			},
+		},
+	})
+	if err != nil {
+		log.Error(err, "Failed to delete t_role_binding tracking relationships", "name", binding.Name)
+		return fmt.Errorf("failed to delete t_role_binding tracking relationships for ClusterRoleBinding %s: %w", binding.Name, err)
+	}
+
+	log.Info("Successfully deleted ClusterRoleBinding", "name", binding.Name)
+	return nil
+}
+
+// DeleteClusterRole removes a ClusterRole and all derived RBAC data.
 func (m *KubeRbacToKessel) DeleteClusterRole(ctx context.Context, clusterRole *rbacv1.ClusterRole) error {
 	if clusterRole == nil {
 		return fmt.Errorf("cluster role is nil")
 	}
-
 	log := logf.FromContext(ctx)
 	log.Info("Deleting ClusterRole", "name", clusterRole.Name)
 
@@ -1433,7 +1529,6 @@ func (m *KubeRbacToKessel) DeleteClusterRole(ctx context.Context, clusterRole *r
 		log.Error(err, "Failed to read kube role binding relationships for ClusterRole", "name", clusterRole.Name)
 		return fmt.Errorf("failed to read kube role binding relationships for ClusterRole %s: %w", clusterRole.Name, err)
 	}
-
 	log.Info("Found kube role bindings for ClusterRole", "name", clusterRole.Name, "bindingCount", len(kubeBindingIds))
 
 	// Step 2: For each kube role binding, delete all related RBAC bindings and their relationships
