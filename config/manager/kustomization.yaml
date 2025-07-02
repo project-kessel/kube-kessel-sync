@@ -6,3 +6,17 @@ images:
 - name: controller
   newName: example.com/kube-kessel-sync
   newTag: v0.0.1
+
+# Inject SpiceDB connectivity configuration via environment variables
+patches:
+- path: spicedb_env_patch.yaml
+  target:
+    kind: Deployment
+
+# Secret providing the bearer token. Replace the literal with a real value in non-test environments.
+secretGenerator:
+- literals:
+  - bearerToken=replace-me
+  name: spicedb-credentials
+  options:
+    disableNameSuffixHash: true

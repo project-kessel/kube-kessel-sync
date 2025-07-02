@@ -1,0 +1,18 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: controller-manager
+  namespace: system
+spec:
+  template:
+    spec:
+      containers:
+        - name: manager
+          env:
+            - name: SPICEDB_ENDPOINT
+              value: spicedb-grpc.spicedb.svc.cluster.local:50051
+            - name: SPICEDB_BEARER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: spicedb-credentials
+                  key: bearerToken

@@ -215,12 +215,23 @@ func main() {
 		os.Exit(1)
 	}
 
-	spiceDb, err := spicedb.NewClient(
-		// TODO: spicedb running somewhere
-		"localhost:50051",
-		grpcutil.WithInsecureBearerToken("your-bearer-token"),
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	)
+	// SpiceDB client configuration
+	// The endpoint and bearer token can be provided via the environment
+	// variables SPICEDB_ENDPOINT and SPICEDB_BEARER_TOKEN respectively.
+	spiceDbEndpoint := os.Getenv("SPICEDB_ENDPOINT")
+	if spiceDbEndpoint == "" {
+		spiceDbEndpoint = "localhost:50051"
+	}
+
+	// Build the gRPC dial options.
+	var spiceDbDialOpts []grpc.DialOption
+	if token := os.Getenv("SPICEDB_BEARER_TOKEN"); token != "" {
+		spiceDbDialOpts = append(spiceDbDialOpts, grpcutil.WithInsecureBearerToken(token))
+	}
+	// NOTE: Using insecure transport credentials for now. Update when TLS is enabled.
+	spiceDbDialOpts = append(spiceDbDialOpts, grpc.WithTransportCredentials(insecure.NewCredentials()))
+
+	spiceDb, err := spicedb.NewClient(spiceDbEndpoint, spiceDbDialOpts...)
 	if err != nil {
 		return
 	}
