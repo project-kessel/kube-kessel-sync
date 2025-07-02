@@ -111,6 +111,20 @@ func (r *KesselSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 	}
 
+	// Fetch all namespaces
+	allNamespaceExistingList := &corev1.NamespaceList{}
+	if err := r.Client.List(ctx, allNamespaceExistingList); err != nil {
+		log.Error(err, "Failed to list Namespaces")
+		return ctrl.Result{}, err
+	}
+	for _, namespace := range allNamespaceExistingList.Items {
+		foundUids[namespace.UID] = true
+		if _, ok := r.lastData[namespace.UID]; !ok {
+			r.lastData[namespace.UID] = namespace.DeepCopy()
+			created = append(created, namespace.DeepCopy())
+		}
+	}
+
 	// Post all created objects
 	for _, obj := range created {
 		r.Sink.ObjectAddedOrChanged(ctx, obj)
