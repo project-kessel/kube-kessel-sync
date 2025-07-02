@@ -17,8 +17,10 @@ limitations under the License.
 package e2e
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -29,6 +31,12 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/project-kessel/kube-kessel-sync/test/utils"
+
+	spicedbv1 "github.com/authzed/authzed-go/proto/authzed/api/v1"
+	spicedb "github.com/authzed/authzed-go/v1"
+	"github.com/authzed/grpcutil"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 // namespace where the project is deployed in
@@ -325,6 +333,111 @@ spec:
 		//    fmt.Sprintf(`controller_runtime_reconcile_total{controller="%s",result="success"} 1`,
 		//    strings.ToLower(<Kind>),
 		// ))
+
+		Context("RBAC replication", func() {
+			It("should propagate RoleBinding permissions to SpiceDB", func() {
+				const (
+					rbacTestNs  = "rbac-test"
+					serviceAcct = "testsa"
+					roleName    = "pod-reader"
+					bindingName = "read-pods-binding"
+					pfLocalPort = "56051"
+					checkPerm   = "pods_get"
+				)
+
+				By("creating test namespace and service account")
+				cmd := exec.Command("kubectl", "create", "ns", rbacTestNs)
+				_, _ = utils.Run(cmd) // ignore already exists
+
+				cmd = exec.Command("kubectl", "-n", rbacTestNs, "create", "sa", serviceAcct)
+				_, _ = utils.Run(cmd) // ignore already exists
+
+				By("applying Role and RoleBinding")
+				roleYaml := fmt.Sprintf(`apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: %s
+  namespace: %s
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list"]
+`, roleName, rbacTestNs)
+				cmd = exec.Command("kubectl", "apply", "-f", "-")
+				cmd.Stdin = strings.NewReader(roleYaml)
+				_, err := utils.Run(cmd)
+				Expect(err).NotTo(HaveOccurred(), "Failed to create Role")
+
+				bindingYaml := fmt.Sprintf(`apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: %s
+  namespace: %s
+subjects:
+- kind: ServiceAccount
+  name: %s
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: %s
+`, bindingName, rbacTestNs, serviceAcct, roleName)
+				cmd = exec.Command("kubectl", "apply", "-f", "-")
+				cmd.Stdin = strings.NewReader(bindingYaml)
+				_, err = utils.Run(cmd)
+				Expect(err).NotTo(HaveOccurred(), "Failed to create RoleBinding")
+
+				By("starting port-forward to SpiceDB")
+				ctxPF, cancelPF := context.WithCancel(context.Background())
+				pfCmd := exec.CommandContext(ctxPF, "kubectl", "-n", spiceDbNs, "port-forward", fmt.Sprintf("deploy/%s", spiceDbClusterName), fmt.Sprintf("%s:50051", pfLocalPort))
+				pfCmd.Stdout = GinkgoWriter
+				pfCmd.Stderr = GinkgoWriter
+				Expect(pfCmd.Start()).To(Succeed(), "failed to start port-forward")
+				DeferCleanup(func() {
+					cancelPF()
+					_ = pfCmd.Wait()
+				})
+
+				By("waiting for port-forward to be ready")
+				Eventually(func() bool {
+					conn, err := net.DialTimeout("tcp", "localhost:"+pfLocalPort, 2*time.Second)
+					if err != nil {
+						return false
+					}
+					_ = conn.Close()
+					return true
+				}, 30*time.Second, 1*time.Second).Should(BeTrue())
+
+				By("checking permission via SpiceDB")
+				client, err := spicedb.NewClient("localhost:"+pfLocalPort,
+					grpcutil.WithInsecureBearerToken(spiceDbToken),
+					grpc.WithTransportCredentials(insecure.NewCredentials()),
+				)
+				Expect(err).NotTo(HaveOccurred())
+
+				verifyPermission := func(g Gomega) {
+					resp, err := client.CheckPermission(context.Background(), &spicedbv1.CheckPermissionRequest{
+						Resource: &spicedbv1.ObjectReference{
+							ObjectType: "kubernetes/knamespace",
+							ObjectId:   fmt.Sprintf("%s/%s", "default-cluster", rbacTestNs),
+						},
+						Permission: checkPerm,
+						Subject: &spicedbv1.SubjectReference{
+							Object: &spicedbv1.ObjectReference{
+								ObjectType: "rbac/principal",
+								ObjectId:   fmt.Sprintf("kubernetes/%s", serviceAcct),
+							},
+						},
+						Consistency: &spicedbv1.Consistency{
+							Requirement: &spicedbv1.Consistency_FullyConsistent{FullyConsistent: true},
+						},
+					})
+					g.Expect(err).NotTo(HaveOccurred())
+					g.Expect(resp.Permissionship).To(Equal(spicedbv1.CheckPermissionResponse_PERMISSIONSHIP_HAS_PERMISSION))
+				}
+
+				Eventually(verifyPermission, 2*time.Minute, 5*time.Second).Should(Succeed())
+			})
+		})
 	})
 })
 
