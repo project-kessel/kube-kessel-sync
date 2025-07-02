@@ -12,11 +12,3 @@ patches:
 - path: spicedb_env_patch.yaml
   target:
     kind: Deployment
-
-# Secret providing the bearer token. Replace the literal with a real value in non-test environments.
-secretGenerator:
-- literals:
-  - bearerToken=replace-me
-  name: spicedb-credentials
-  options:
-    disableNameSuffixHash: true

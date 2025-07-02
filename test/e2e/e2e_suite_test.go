@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/exec"
 	"testing"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -78,9 +79,35 @@ var _ = BeforeSuite(func() {
 			_, _ = fmt.Fprintf(GinkgoWriter, "WARNING: CertManager is already installed. Skipping installation...\n")
 		}
 	}
+
+	// -----------------------------------------------------------------------------
+	// SpiceDB operator + cluster setup
+	// -----------------------------------------------------------------------------
+	// We deploy the SpiceDB operator, then a single-instance in-memory SpiceDBCluster
+	// called "spicedb" in its own namespace. Finally we wire the controller
+	// credentials secret into the controller namespace.
+
+	By("installing SpiceDB operator")
+	cmd = exec.Command("kubectl", "apply", "-f", "https://github.com/authzed/spicedb-operator/releases/latest/download/bundle.yaml")
+	_, err = utils.Run(cmd)
+	Expect(err).NotTo(HaveOccurred(), "Failed to install SpiceDB operator")
+
+	// Wait until the operator's deployment exists and has at least one ready replica (max 3 min).
+	verifyOperatorReady := func(g Gomega) {
+		cmd := exec.Command("kubectl", "-n", "spicedb-operator", "get", "deploy", "spicedb-operator", "-o", "jsonpath={.status.readyReplicas}")
+		out, err := utils.Run(cmd)
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(out).NotTo(Equal(""))
+		g.Expect(out).NotTo(Equal("0"))
+	}
+	Eventually(verifyOperatorReady, 3*time.Minute, 5*time.Second).Should(Succeed())
 })
 
 var _ = AfterSuite(func() {
+	By("uninstalling SpiceDB operator")
+	cmd := exec.Command("kubectl", "delete", "-f", "https://github.com/authzed/spicedb-operator/releases/latest/download/bundle.yaml", "--ignore-not-found=true")
+	_, _ = utils.Run(cmd)
+
 	// Teardown CertManager after the suite if not skipped and if it was not already installed
 	if !skipCertManagerInstall && !isCertManagerAlreadyInstalled {
 		_, _ = fmt.Fprintf(GinkgoWriter, "Uninstalling CertManager...\n")

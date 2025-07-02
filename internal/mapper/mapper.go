@@ -111,7 +111,7 @@ func (m *KubeRbacToKessel) SetUpSchema(ctx context.Context) error {
 	}
 
 	request := &spicedbv1.WriteSchemaRequest{Schema: schema}
-	_, err = m.SpiceDb.WriteSchema(context.Background(), request)
+	_, err = m.SpiceDb.WriteSchema(ctx, request)
 	return err
 }
 

@@ -17,6 +17,7 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
 	"os"
@@ -241,6 +242,11 @@ func main() {
 		Kube:         mgr.GetClient(),
 		SpiceDb:      spiceDb,
 		SchemaSource: &mapper.FileSchemaSource{}, // Uses default path "config/ksl/schema.zed"
+	}
+
+	if err := kubeRbac2Ksl.SetUpSchema(context.Background()); err != nil {
+		setupLog.Error(err, "unable to set up schema")
+		os.Exit(1)
 	}
 
 	if err := (&controller.KesselSyncReconciler{

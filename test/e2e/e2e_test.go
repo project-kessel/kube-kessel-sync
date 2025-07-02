@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -42,6 +43,14 @@ const metricsServiceName = "kube-kessel-sync-controller-manager-metrics-service"
 // metricsRoleBindingName is the name of the RBAC that will be created to allow get the metrics data
 const metricsRoleBindingName = "kube-kessel-sync-metrics-binding"
 
+const (
+	spiceDbNs          = "spicedb"
+	spiceDbClusterName = "spicedb"
+	spiceDbToken       = "averysecretpresharedkey"
+	controllerNs       = "kube-kessel-sync-system"
+	controllerSecret   = "spicedb-credentials"
+)
+
 var _ = Describe("Manager", Ordered, func() {
 	var controllerPodName string
 
@@ -59,6 +68,48 @@ var _ = Describe("Manager", Ordered, func() {
 			"pod-security.kubernetes.io/enforce=restricted")
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to label namespace with restricted policy")
+
+		By("creating SpiceDB namespace")
+		cmd = exec.Command("kubectl", "create", "ns", spiceDbNs)
+		_, _ = utils.Run(cmd) // ignore error if already exists
+
+		By("creating SpiceDB preshared-key secret")
+		cmd = exec.Command("kubectl", "-n", spiceDbNs, "create", "secret", "generic", "spicedb-config", "--from-literal", fmt.Sprintf("preshared_key=%s", spiceDbToken))
+		_, _ = utils.Run(cmd) // ignore if exists
+
+		By("creating SpiceDBCluster CR")
+		spiceClusterYaml := fmt.Sprintf(`apiVersion: authzed.com/v1alpha1
+kind: SpiceDBCluster
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  config:
+    datastoreEngine: memory
+  secretName: spicedb-config
+`, spiceDbClusterName, spiceDbNs)
+		cmd = exec.Command("kubectl", "apply", "-f", "-")
+		cmd.Stdin = strings.NewReader(spiceClusterYaml)
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to create SpiceDBCluster")
+
+		// Wait for SpiceDB deployment ready
+		verifySpiceReady := func(g Gomega) {
+			cmd := exec.Command("kubectl", "-n", spiceDbNs, "get", "deploy", fmt.Sprintf("%s-spicedb", spiceDbClusterName), "-o", "jsonpath={.status.readyReplicas}")
+			out, err := utils.Run(cmd)
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(out).To(Equal("1"))
+		}
+		Eventually(verifySpiceReady, 3*time.Minute, 5*time.Second).Should(Succeed())
+
+		// Ensure the controller namespace exists before creating the bearer-token secret
+		By("ensuring controller namespace exists")
+		cmd = exec.Command("kubectl", "create", "ns", controllerNs)
+		_, _ = utils.Run(cmd) // ignore error if already exists
+
+		By("creating controller bearer-token secret")
+		cmd = exec.Command("kubectl", "-n", controllerNs, "create", "secret", "generic", controllerSecret, "--from-literal", fmt.Sprintf("bearerToken=%s", spiceDbToken))
+		_, _ = utils.Run(cmd) // ignore if exists
 
 		By("installing CRDs")
 		cmd = exec.Command("make", "install")
@@ -80,6 +131,14 @@ var _ = Describe("Manager", Ordered, func() {
 
 		By("undeploying the controller-manager")
 		cmd = exec.Command("make", "undeploy")
+		_, _ = utils.Run(cmd)
+
+		By("uninstalling SpiceDB cluster")
+		cmd = exec.Command("kubectl", "-n", spiceDbNs, "delete", "spicedbcluster", spiceDbClusterName, "--ignore-not-found=true")
+		_, _ = utils.Run(cmd)
+
+		By("deleting SpiceDB namespace")
+		cmd = exec.Command("kubectl", "delete", "ns", spiceDbNs, "--ignore-not-found=true")
 		_, _ = utils.Run(cmd)
 
 		By("uninstalling CRDs")
