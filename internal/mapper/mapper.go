@@ -257,12 +257,12 @@ func (m *KubeRbacToKessel) MapRole(ctx context.Context, role *rbacv1.Role) error
 		for _, bindingId := range bindingIds {
 			// Determine the underlying Kubernetes binding for each RBAC binding.
 			// This is a set because we may have multiple RBAC bindings for the same Kubernetes binding.
-			resourceId := NewResourceIdFromString(bindingId)
-			if resourceId != nil {
+			resourceId, err := NewResourceIdFromString(bindingId)
+			if err == nil {
 				distinctKubeBindingIds[resourceId.String()] = resourceId
 			}
 
-			_, err := m.SpiceDb.DeleteRelationships(ctx, &spicedbv1.DeleteRelationshipsRequest{
+			_, err = m.SpiceDb.DeleteRelationships(ctx, &spicedbv1.DeleteRelationshipsRequest{
 				RelationshipFilter: &spicedbv1.RelationshipFilter{
 					OptionalSubjectFilter: &spicedbv1.SubjectFilter{
 						SubjectType:       "rbac/role_binding",
@@ -619,12 +619,12 @@ func (m *KubeRbacToKessel) MapClusterRole(ctx context.Context, clusterRole *rbac
 		for _, bindingId := range bindingIds {
 			// Determine the underlying Kubernetes binding for each RBAC binding.
 			// This is a set because we may have multiple RBAC bindings for the same Kubernetes binding.
-			resourceId := NewResourceIdFromString(bindingId)
-			if resourceId != nil {
+			resourceId, err := NewResourceIdFromString(bindingId)
+			if err == nil {
 				uniqueResourceIds[resourceId.String()] = resourceId
 			}
 
-			_, err := m.SpiceDb.DeleteRelationships(ctx, &spicedbv1.DeleteRelationshipsRequest{
+			_, err = m.SpiceDb.DeleteRelationships(ctx, &spicedbv1.DeleteRelationshipsRequest{
 				RelationshipFilter: &spicedbv1.RelationshipFilter{
 					OptionalSubjectFilter: &spicedbv1.SubjectFilter{
 						SubjectType:       "rbac/role_binding",
@@ -1138,26 +1138,23 @@ func (m *KubeRbacToKessel) processResourceNameBindingsForNamespace(ctx context.C
 			bindingId := response.Relationship.Subject.Object.ObjectId
 
 			// Parse the resource ID to get the resource type and name
-			resourceId := NewResourceIdFromString(response.Relationship.Resource.ObjectId)
-			if resourceId == nil {
-				log.Error(nil, "Failed to parse resource ID", "resourceId", response.Relationship.Resource.ObjectId)
-				return nil
+			resourceId, err := NewResourceIdFromString(response.Relationship.Resource.ObjectId)
+			if err == nil {
+				// Create namespace-specific resource binding
+				// The resource ID format is {cluster_id}/{namespace}/{resource_name}
+				namespaceResourceId := NewResourceId(m.ClusterId, namespace, resourceId.Name)
+
+				// Create the namespace-specific resource binding relationship
+				updates = append(updates, relationshipTouch(&spicedbv1.ObjectReference{
+					ObjectType: response.Relationship.Resource.ObjectType,
+					ObjectId:   namespaceResourceId.String(),
+				}, "t_role_binding", &spicedbv1.SubjectReference{
+					Object: &spicedbv1.ObjectReference{
+						ObjectType: "rbac/role_binding",
+						ObjectId:   bindingId,
+					},
+				}))
 			}
-
-			// Create namespace-specific resource binding
-			// The resource ID format is {cluster_id}/{namespace}/{resource_name}
-			namespaceResourceId := NewResourceId(m.ClusterId, namespace, resourceId.Name)
-
-			// Create the namespace-specific resource binding relationship
-			updates = append(updates, relationshipTouch(&spicedbv1.ObjectReference{
-				ObjectType: response.Relationship.Resource.ObjectType,
-				ObjectId:   namespaceResourceId.String(),
-			}, "t_role_binding", &spicedbv1.SubjectReference{
-				Object: &spicedbv1.ObjectReference{
-					ObjectType: "rbac/role_binding",
-					ObjectId:   bindingId,
-				},
-			}))
 
 			return nil
 		},

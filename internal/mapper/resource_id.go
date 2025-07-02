@@ -18,6 +18,7 @@ package mapper
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -37,7 +38,7 @@ func (r *ResourceId) GetName() string {
 
 // String returns the full resource ID in the format cluster/namespace/name (namespace may be empty for cluster-scoped resources)
 func (r *ResourceId) String() string {
-	return fmt.Sprintf("%s/%s/%s", r.Cluster, r.Namespace, r.Name)
+	return fmt.Sprintf("%s/%s/%s", encodeSegment(r.Cluster), encodeSegment(r.Namespace), encodeSegment(r.Name))
 }
 
 // WithSegment extends the resource ID with an additional segment
@@ -82,21 +83,101 @@ func NewResourceIdFromNamespacedName(cluster string, obj NamespacedName) *Resour
 
 // NewResourceIdFromString creates a ResourceId by parsing a string in the format "cluster/namespace/name" (namespace may be empty for cluster-scoped resources)
 // Any additional segments after the name are ignored
-func NewResourceIdFromString(resourceIdStr string) *ResourceId {
+func NewResourceIdFromString(resourceIdStr string) (*ResourceId, error) {
 	parts := strings.Split(resourceIdStr, "/")
 
 	// Need at least cluster, namespace, and name (namespace may be empty)
 	if len(parts) < 3 {
-		return nil
+		return nil, fmt.Errorf("resource ID %q has %d parts; expected at least 3", resourceIdStr, len(parts))
 	}
 
-	cluster := parts[0]
-	namespace := parts[1]
-	name := parts[2]
+	cluster, err := decodeSegment(parts[0])
+	if err != nil {
+		return nil, err
+	}
+	namespace, err := decodeSegment(parts[1])
+	if err != nil {
+		return nil, err
+	}
+	name, err := decodeSegment(parts[2])
+	if err != nil {
+		return nil, err
+	}
 
 	return &ResourceId{
 		Cluster:   cluster,
 		Namespace: namespace,
 		Name:      name,
+	}, nil
+}
+
+// SpiceString is deprecated; use String().
+func (r *ResourceId) SpiceString() string {
+	return r.String()
+}
+
+// NewResourceIdFromSpiceString is deprecated; use NewResourceIdFromString().
+func NewResourceIdFromSpiceString(s string) (*ResourceId, error) {
+	return NewResourceIdFromString(s)
+}
+
+// -----------------------------------------------------------------------------
+// SpiceDB-compatible encoding helpers
+// -----------------------------------------------------------------------------
+
+// Allowed characters for SpiceDB object IDs are a-z, A-Z, 0-9, and the symbols
+// "/ _ | - = +".
+// We additionally reserve '=' and '/' for escape sequences and path separators,
+// so those – along with any other byte outside the allowed set – are percent-
+// encoded using '=' followed by two upper-case hexadecimal digits (e.g. ':' –>
+// "=3A"). This keeps the result human-readable and 100 % reversible while
+// guaranteeing compliance with the allowed character set.
+
+// isSafe reports whether b can appear in a SpiceDB segment unescaped.
+func isSafe(b byte) bool {
+	if ('a' <= b && b <= 'z') || ('A' <= b && b <= 'Z') || ('0' <= b && b <= '9') {
+		return true
 	}
+	switch b {
+	case '_', '|', '\\', '-', '+':
+		return true
+	default:
+		return false
+	}
+}
+
+// encodeSegment escapes a single path segment to satisfy SpiceDB rules.
+func encodeSegment(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if isSafe(c) {
+			b.WriteByte(c)
+		} else {
+			// Escape everything else with =XX (uppercase hex)
+			fmt.Fprintf(&b, "=%02X", c)
+		}
+	}
+	return b.String()
+}
+
+// decodeSegment performs the inverse of encodeSegment.
+func decodeSegment(enc string) (string, error) {
+	var b strings.Builder
+	for i := 0; i < len(enc); i++ {
+		if enc[i] == '=' {
+			if i+2 >= len(enc) {
+				return "", fmt.Errorf("truncated escape sequence in %q", enc)
+			}
+			val, err := strconv.ParseUint(enc[i+1:i+3], 16, 8)
+			if err != nil {
+				return "", fmt.Errorf("invalid escape sequence %q: %v", enc[i:i+3], err)
+			}
+			b.WriteByte(byte(val))
+			i += 2 // Skip the two hex digits we've just consumed
+		} else {
+			b.WriteByte(enc[i])
+		}
+	}
+	return b.String(), nil
 }

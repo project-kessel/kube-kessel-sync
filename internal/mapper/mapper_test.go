@@ -966,6 +966,70 @@ func TestMapper(t *testing.T) {
 				"rbac/principal", "kubernetes/test-user")
 		})
 
+		// Ensure system-style cluster roles whose names contain ':' are processed correctly
+		t.Run("cluster role with colon in name grants access", func(t *testing.T) {
+			t.Parallel()
+
+			spicedb, kube, k2k := setupTest(ctx, t, port)
+
+			// Pre-create namespaces so they are present in the graph
+			ns1 := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-namespace"},
+			}
+			ns2 := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{Name: "another-namespace"},
+			}
+
+			kube.AddOrReplace(ns1)
+			kube.AddOrReplace(ns2)
+			k2k.ObjectAddedOrChanged(ctx, ns1)
+			k2k.ObjectAddedOrChanged(ctx, ns2)
+
+			clusterRole := &rbacv1.ClusterRole{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "system:controller:deployment-controller",
+				},
+				Rules: []rbacv1.PolicyRule{
+					{
+						APIGroups: []string{""},
+						Resources: []string{"pods"},
+						Verbs:     []string{"get"},
+					},
+				},
+			}
+
+			clusterBinding := &rbacv1.ClusterRoleBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "system-controller-binding",
+				},
+				Subjects: []rbacv1.Subject{
+					{
+						Kind: "User",
+						Name: "test-user",
+					},
+				},
+				RoleRef: rbacv1.RoleRef{
+					APIGroup: rbacv1.GroupName,
+					Kind:     "ClusterRole",
+					Name:     clusterRole.Name,
+				},
+			}
+
+			kube.AddOrReplace(clusterRole)
+			kube.AddOrReplace(clusterBinding)
+
+			k2k.ObjectAddedOrChanged(ctx, clusterRole)
+			k2k.ObjectAddedOrChanged(ctx, clusterBinding)
+
+			// Verify the user has access in both namespaces
+			assertAccess(t, ctx, spicedb,
+				"kubernetes/knamespace", "test-cluster/test-namespace", "pods_get",
+				"rbac/principal", "kubernetes/test-user")
+			assertAccess(t, ctx, spicedb,
+				"kubernetes/knamespace", "test-cluster/another-namespace", "pods_get",
+				"rbac/principal", "kubernetes/test-user")
+		})
+
 		// Given a cluster role binding, ensure new namespaces added after the binding are also accessible
 		t.Run("new namespaces added after cluster binding are accessible", func(t *testing.T) {
 			t.Parallel()
