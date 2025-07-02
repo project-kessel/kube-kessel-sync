@@ -19,6 +19,16 @@ CONTAINER_TOOL ?= docker
 SHELL = /usr/bin/env bash -o pipefail
 .SHELLFLAGS = -ec
 
+# ---------------------------------------------------------------------------
+# Developer-specific environment overrides
+# If a `.env` file exists in the project root, load it and export all the
+# variables it defines so that they are available inside every recipe.
+# ---------------------------------------------------------------------------
+ifneq (,$(wildcard .env))
+include .env
+export $(shell grep -E '^[A-Za-z_][A-Za-z0-9_]*=' .env | cut -d= -f1)
+endif
+
 .PHONY: all
 all: build
 
