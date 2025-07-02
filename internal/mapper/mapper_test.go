@@ -2124,6 +2124,50 @@ func TestMapper(t *testing.T) {
 				"kubernetes/knamespace", "test-cluster/prefix-ns", "pods_get",
 				"rbac/principal", "kubernetes/user2")
 		})
+
+		// Deleting a cluster role with ':' in the name should revoke access and remove tuples
+		t.Run("cluster role with colon deletion revokes access", func(t *testing.T) {
+			spicedb, kube, k2k := setupTest(ctx, t, port)
+
+			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "test-namespace"}}
+			kube.AddOrReplace(ns)
+			k2k.ObjectAddedOrChanged(ctx, ns)
+
+			clusterRole := &rbacv1.ClusterRole{
+				ObjectMeta: metav1.ObjectMeta{Name: "system:controller:deployment-controller"},
+				Rules:      []rbacv1.PolicyRule{{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"get"}}},
+			}
+
+			binding := &rbacv1.ClusterRoleBinding{
+				ObjectMeta: metav1.ObjectMeta{Name: "binding-with-colon-role"},
+				Subjects:   []rbacv1.Subject{{Kind: "User", Name: "test-user"}},
+				RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: clusterRole.Name},
+			}
+
+			kube.AddOrReplace(clusterRole)
+			kube.AddOrReplace(binding)
+			k2k.ObjectAddedOrChanged(ctx, clusterRole)
+			k2k.ObjectAddedOrChanged(ctx, binding)
+
+			// Verify access granted
+			assertAccess(t, ctx, spicedb,
+				"kubernetes/knamespace", "test-cluster/test-namespace", "pods_get",
+				"rbac/principal", "kubernetes/test-user")
+
+			// Delete the cluster role
+			k2k.ObjectDeleted(ctx, clusterRole)
+
+			// Access should be revoked
+			assertNoAccess(t, ctx, spicedb,
+				"kubernetes/knamespace", "test-cluster/test-namespace", "pods_get",
+				"rbac/principal", "kubernetes/test-user")
+
+			for _, rt := range []string{"kubernetes/role", "kubernetes/role_binding", "rbac/role", "rbac/role_binding"} {
+				if c := countTotalRelationships(t, ctx, spicedb, rt); c != 0 {
+					t.Errorf("Expected 0 relationships for %s after deletion, got %d", rt, c)
+				}
+			}
+		})
 	})
 	t.Run("roles", func(t *testing.T) {
 		t.Run("role deletion revokes namespace-level access", func(t *testing.T) {
