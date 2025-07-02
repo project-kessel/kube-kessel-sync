@@ -10,6 +10,7 @@ import rbac
 @rbac.add_v2_permission(app:'kubernetes', resource:'pods', verb:'update')
 @rbac.add_v2_permission(app:'kubernetes', resource:'configmaps', verb:'get')
 @rbac.add_v2_permission(app:'kubernetes', resource:'configmaps', verb:'update')
+@rbac.add_v2_permission(app:'kubernetes', resource:'configmaps', verb:'list')
 type cluster {
     relation workspace: [ExactlyOne rbac.workspace]
     relation role_binding: [Any rbac.role_binding]
@@ -19,6 +20,7 @@ type cluster {
     relation pods_update: role_binding.kubernetes_pods_update or workspace.kubernetes_pods_update
     relation configmaps_get: role_binding.kubernetes_configmaps_get or workspace.kubernetes_configmaps_get
     relation configmaps_update: role_binding.kubernetes_configmaps_update or workspace.kubernetes_configmaps_update
+    relation configmaps_list: role_binding.kubernetes_configmaps_list or workspace.kubernetes_configmaps_list
 }
 
 type knamespace {
@@ -31,22 +33,23 @@ type knamespace {
     relation pods_update: role_binding.kubernetes_pods_update or workspace.kubernetes_pods_update or cluster.pods_update
     relation configmaps_get: role_binding.kubernetes_configmaps_get or workspace.kubernetes_configmaps_get or cluster.configmaps_get
     relation configmaps_update: role_binding.kubernetes_configmaps_update or workspace.kubernetes_configmaps_update or cluster.configmaps_update
+    relation configmaps_list: role_binding.kubernetes_configmaps_list or workspace.kubernetes_configmaps_list or cluster.configmaps_list
 }
 
 type configmap {
     relation knamespace: [ExactlyOne knamespace]
     relation role_binding: [Any rbac.role_binding]
 
-    relation get: role_binding.kubernetes_configmaps_get or knamespace.configmaps_get or cluster_resource.get
-    relation update: role_binding.kubernetes_configmaps_update or knamespace.configmaps_update or cluster_resource.update
+    relation get: role_binding.kubernetes_configmaps_get or knamespace.configmaps_get
+    relation update: role_binding.kubernetes_configmaps_update or knamespace.configmaps_update
 }
 
 type pod {
     relation knamespace: [ExactlyOne knamespace]
     relation role_binding: [Any rbac.role_binding]
 
-    relation get: role_binding.kubernetes_pods_get or knamespace.pods_get or cluster_resource.get
-    relation update: role_binding.kubernetes_pods_update or knamespace.pods_update or cluster_resource.update
+    relation get: role_binding.kubernetes_pods_get or knamespace.pods_get
+    relation update: role_binding.kubernetes_pods_update or knamespace.pods_update
 }
 
 // Relationships needed to retrive objects during role or binding updates.

@@ -52,6 +52,45 @@ type Getter interface {
 	Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error
 }
 
+// supportedResourceVerbs defines, for each supported Kubernetes resource type,
+// the set of verbs that are currently mapped to SpiceDB tuples.
+var supportedResourceVerbs = map[string]map[string]struct{}{
+	"pods": {
+		"get":    {},
+		"list":   {},
+		"update": {},
+	},
+	"configmaps": {
+		"get":    {},
+		"list":   {},
+		"update": {},
+	},
+}
+
+// isSupportedPermission returns true if the supplied apiGroup, resource and verb are currently supported
+// by the mapper. We only support core (empty apiGroup) resources "pods" and "configmaps" with the verbs
+// "get", "list" and "update" for the POC.
+// In the future, we would either use a generic schema not coupled to resource types,
+// or template the schema by discovering types in the cluster and updating the schema in realtime.
+func isSupportedPermission(apiGroup, resource, verb string) bool {
+	// Only the core API group ("" or "core") is supported at the moment.
+	if apiGroup != "" && apiGroup != "core" {
+		return false
+	}
+
+	// Normalize case for comparison.
+	resource = strings.ToLower(resource)
+	verb = strings.ToLower(verb)
+
+	verbs, ok := supportedResourceVerbs[resource]
+	if !ok {
+		return false
+	}
+
+	_, ok = verbs[verb]
+	return ok
+}
+
 func (m *KubeRbacToKessel) ObjectAddedOrChanged(ctx context.Context, obj client.Object) error {
 	log := logf.FromContext(ctx)
 
@@ -173,7 +212,10 @@ func (m *KubeRbacToKessel) MapRole(ctx context.Context, role *rbacv1.Role) error
 		for _, apiGroup := range rule.APIGroups {
 			for _, resource := range rule.Resources {
 				for _, verb := range rule.Verbs {
-					// TODO: allow-list resource/verb because not all may be in the schema
+					if !isSupportedPermission(apiGroup, resource, verb) {
+						// Skip unsupported permissions
+						continue
+					}
 
 					// Format the verb to be compatible with RBAC Role relation
 					verb, tuple := permissionToTuple(apiGroup, resource, verb, roleId)
@@ -532,7 +574,10 @@ func (m *KubeRbacToKessel) MapClusterRole(ctx context.Context, clusterRole *rbac
 		for _, apiGroup := range rule.APIGroups {
 			for _, resource := range rule.Resources {
 				for _, verb := range rule.Verbs {
-					// TODO: allow-list resource/verb because not all may be in the schema
+					if !isSupportedPermission(apiGroup, resource, verb) {
+						// Skip unsupported permissions
+						continue
+					}
 
 					// Format the verb to be compatible with RBAC Role relation
 					verb, tuple := permissionToTuple(apiGroup, resource, verb, roleId)
