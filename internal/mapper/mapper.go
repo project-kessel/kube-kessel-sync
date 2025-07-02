@@ -1196,91 +1196,16 @@ func (m *KubeRbacToKessel) DeleteRole(ctx context.Context, role *rbacv1.Role) er
 
 	log.Info("Found kube role bindings for Role", "name", role.Name, "namespace", role.Namespace, "bindingCount", len(kubeBindingIds))
 
-	// Step 2: For each kube role binding, delete all related RBAC bindings and their relationships
+	// Step 2: For each kube role binding, perform a standard cascade deletion
 	for _, kubeBindingId := range kubeBindingIds {
-		// Step 2a: Find all rbac binding IDs for this kube binding (we need these for subject relationship deletion)
-		var rbacBindingIds []string
-		err = streamutil.ForEach(
-			func() (spicedbv1.PermissionsService_ReadRelationshipsClient, error) {
-				return m.SpiceDb.ReadRelationships(ctx, &spicedbv1.ReadRelationshipsRequest{
-					Consistency: fullyConsistent,
-					RelationshipFilter: &spicedbv1.RelationshipFilter{
-						ResourceType:       "kubernetes/role_binding",
-						OptionalResourceId: kubeBindingId,
-						OptionalRelation:   "t_rbac_binding",
-					},
-				})
-			},
-			func(response *spicedbv1.ReadRelationshipsResponse) error {
-				rbacBindingIds = append(rbacBindingIds, response.Relationship.Subject.Object.ObjectId)
-				return nil
-			},
-		)
-		if err != nil {
-			log.Error(err, "Failed to read rbac binding relationships for kube binding", "kubeBindingId", kubeBindingId)
-			return fmt.Errorf("failed to read rbac binding relationships for kube binding %s: %w", kubeBindingId, err)
-		}
-
-		// Step 2b: Delete the t_rbac_binding tracking relationships
-		_, err = m.SpiceDb.DeleteRelationships(ctx, &spicedbv1.DeleteRelationshipsRequest{
-			RelationshipFilter: &spicedbv1.RelationshipFilter{
-				ResourceType:       "kubernetes/role_binding",
-				OptionalResourceId: kubeBindingId,
-				OptionalRelation:   "t_rbac_binding",
-			},
-		})
-		if err != nil {
-			log.Error(err, "Failed to delete t_rbac_binding tracking relationships", "kubeBindingId", kubeBindingId)
-			return fmt.Errorf("failed to delete t_rbac_binding tracking relationships for kube binding %s: %w", kubeBindingId, err)
-		}
-
-		// Step 2c: Delete all rbac/role_binding objects with prefix matching this kube binding
-		// The rbac binding IDs are created as: kubeBindingId.WithSegment(ruleIndex)
-		// So we can delete all rbac bindings for this kube binding using prefix matching
-		rbacBindingPrefix := kubeBindingId + "/"
-		_, err = m.SpiceDb.DeleteRelationships(ctx, &spicedbv1.DeleteRelationshipsRequest{
-			RelationshipFilter: &spicedbv1.RelationshipFilter{
-				ResourceType:             "rbac/role_binding",
-				OptionalResourceIdPrefix: rbacBindingPrefix,
-			},
-		})
-		if err != nil {
-			log.Error(err, "Failed to delete rbac role bindings for kube binding", "kubeBindingId", kubeBindingId, "prefix", rbacBindingPrefix)
-			return fmt.Errorf("failed to delete rbac role bindings for kube binding %s: %w", kubeBindingId, err)
-		}
-
-		// Step 2d: Delete all relationships where any of the deleted rbac bindings are subjects
-		// Since SubjectFilter doesn't support prefix matching, we need to delete them individually
-		for _, rbacBindingId := range rbacBindingIds {
-			_, err = m.SpiceDb.DeleteRelationships(ctx, &spicedbv1.DeleteRelationshipsRequest{
-				RelationshipFilter: &spicedbv1.RelationshipFilter{
-					OptionalSubjectFilter: &spicedbv1.SubjectFilter{
-						SubjectType:       "rbac/role_binding",
-						OptionalSubjectId: rbacBindingId,
-					},
-				},
-			})
-			if err != nil {
-				log.Error(err, "Failed to delete subject relationships for rbac binding", "rbacBindingId", rbacBindingId)
-				return fmt.Errorf("failed to delete subject relationships for rbac binding %s: %w", rbacBindingId, err)
-			}
+		if err := m.deleteKubeBindingCascade(ctx, kubeBindingId); err != nil {
+			return err
 		}
 	}
 
-	// Step 3: Delete the t_role_binding tracking relationships from kube role to kube bindings
-	_, err = m.SpiceDb.DeleteRelationships(ctx, &spicedbv1.DeleteRelationshipsRequest{
-		RelationshipFilter: &spicedbv1.RelationshipFilter{
-			ResourceType:       "kubernetes/role",
-			OptionalResourceId: roleResourceId.String(),
-			OptionalRelation:   "t_role_binding",
-		},
-	})
-	if err != nil {
-		log.Error(err, "Failed to delete t_role_binding tracking relationships for Role", "name", role.Name, "namespace", role.Namespace)
-		return fmt.Errorf("failed to delete t_role_binding tracking relationships for Role %s/%s: %w", role.Namespace, role.Name, err)
-	}
-
-	// Step 4: Delete all rbac/role objects with prefix matching this role
+	// Step 3: deleteKubeBindingCascade already removed t_role_binding edges. No additional work needed here.
+	// Proceed to delete all rbac/role objects for this role.
+	// Step 3: Delete all rbac/role objects with prefix matching this role
 	res, err := m.SpiceDb.DeleteRelationships(ctx, &spicedbv1.DeleteRelationshipsRequest{
 		RelationshipFilter: &spicedbv1.RelationshipFilter{
 			ResourceType: "rbac/role",
@@ -1531,92 +1456,16 @@ func (m *KubeRbacToKessel) DeleteClusterRole(ctx context.Context, clusterRole *r
 	}
 	log.Info("Found kube role bindings for ClusterRole", "name", clusterRole.Name, "bindingCount", len(kubeBindingIds))
 
-	// Step 2: For each kube role binding, delete all related RBAC bindings and their relationships
+	// Step 2: For each kube role binding, perform a standard cascade deletion
 	for _, kubeBindingId := range kubeBindingIds {
-		// Step 2a: Find all rbac binding IDs for this kube binding (we need these for subject relationship deletion)
-		var rbacBindingIds []string
-		err = streamutil.ForEach(
-			func() (spicedbv1.PermissionsService_ReadRelationshipsClient, error) {
-				return m.SpiceDb.ReadRelationships(ctx, &spicedbv1.ReadRelationshipsRequest{
-					Consistency: fullyConsistent,
-					RelationshipFilter: &spicedbv1.RelationshipFilter{
-						ResourceType:       "kubernetes/role_binding",
-						OptionalResourceId: kubeBindingId,
-						OptionalRelation:   "t_rbac_binding",
-					},
-				})
-			},
-			func(response *spicedbv1.ReadRelationshipsResponse) error {
-				rbacBindingIds = append(rbacBindingIds, response.Relationship.Subject.Object.ObjectId)
-				return nil
-			},
-		)
-		if err != nil {
-			log.Error(err, "Failed to read rbac binding relationships for kube binding", "kubeBindingId", kubeBindingId)
-			return fmt.Errorf("failed to read rbac binding relationships for kube binding %s: %w", kubeBindingId, err)
-		}
-
-		// Step 2b: Delete the t_rbac_binding tracking relationships
-		// This is for the kube binding, so no prefix match is needed.
-		_, err = m.SpiceDb.DeleteRelationships(ctx, &spicedbv1.DeleteRelationshipsRequest{
-			RelationshipFilter: &spicedbv1.RelationshipFilter{
-				ResourceType:       "kubernetes/role_binding",
-				OptionalResourceId: kubeBindingId,
-				OptionalRelation:   "t_rbac_binding",
-			},
-		})
-		if err != nil {
-			log.Error(err, "Failed to delete t_rbac_binding tracking relationships", "kubeBindingId", kubeBindingId)
-			return fmt.Errorf("failed to delete t_rbac_binding tracking relationships for kube binding %s: %w", kubeBindingId, err)
-		}
-
-		// Step 2c: Delete all rbac/role_binding objects with prefix matching this kube binding
-		// The rbac binding IDs are created as: kubeBindingId.WithSegment(ruleIndex)
-		// So we can delete all rbac bindings for this kube binding using prefix matching
-		rbacBindingPrefix := kubeBindingId + "/"
-		_, err = m.SpiceDb.DeleteRelationships(ctx, &spicedbv1.DeleteRelationshipsRequest{
-			RelationshipFilter: &spicedbv1.RelationshipFilter{
-				ResourceType:             "rbac/role_binding",
-				OptionalResourceIdPrefix: rbacBindingPrefix,
-			},
-		})
-		if err != nil {
-			log.Error(err, "Failed to delete rbac role bindings for kube binding", "kubeBindingId", kubeBindingId, "prefix", rbacBindingPrefix)
-			return fmt.Errorf("failed to delete rbac role bindings for kube binding %s: %w", kubeBindingId, err)
-		}
-
-		// Step 2d: Delete all relationships where any of the deleted rbac bindings are subjects
-		// Since SubjectFilter doesn't support prefix matching, we need to delete them individually
-		for _, rbacBindingId := range rbacBindingIds {
-			_, err = m.SpiceDb.DeleteRelationships(ctx, &spicedbv1.DeleteRelationshipsRequest{
-				RelationshipFilter: &spicedbv1.RelationshipFilter{
-					OptionalSubjectFilter: &spicedbv1.SubjectFilter{
-						SubjectType:       "rbac/role_binding",
-						OptionalSubjectId: rbacBindingId,
-					},
-				},
-			})
-			if err != nil {
-				log.Error(err, "Failed to delete subject relationships for rbac binding", "rbacBindingId", rbacBindingId)
-				return fmt.Errorf("failed to delete subject relationships for rbac binding %s: %w", rbacBindingId, err)
-			}
+		if err := m.deleteKubeBindingCascade(ctx, kubeBindingId); err != nil {
+			return err
 		}
 	}
 
-	// Step 3: Delete the t_role_binding tracking relationships from kube role to kube bindings
-	_, err = m.SpiceDb.DeleteRelationships(ctx, &spicedbv1.DeleteRelationshipsRequest{
-		RelationshipFilter: &spicedbv1.RelationshipFilter{
-			ResourceType:       "kubernetes/role",
-			OptionalResourceId: roleResourceId.String(),
-			OptionalRelation:   "t_role_binding",
-		},
-	})
-	if err != nil {
-		log.Error(err, "Failed to delete t_role_binding tracking relationships for ClusterRole", "name", clusterRole.Name)
-		return fmt.Errorf("failed to delete t_role_binding tracking relationships for ClusterRole %s: %w", clusterRole.Name, err)
-	}
-
-	// Step 4: Delete all rbac/role objects with prefix matching this role
+	// Step 3: deleteKubeBindingCascade already removed t_role_binding edges. No additional work needed here.
+	// Proceed to delete all rbac/role objects for this role.
+	// Step 3: Delete all rbac/role objects with prefix matching this role
 	res, err := m.SpiceDb.DeleteRelationships(ctx, &spicedbv1.DeleteRelationshipsRequest{
 		RelationshipFilter: &spicedbv1.RelationshipFilter{
 			ResourceType: "rbac/role",
@@ -1630,5 +1479,91 @@ func (m *KubeRbacToKessel) DeleteClusterRole(ctx context.Context, clusterRole *r
 	}
 
 	log.Info("Successfully deleted ClusterRole", "name", clusterRole.Name, "deletedRbacRoleCount", res.RelationshipsDeletedCount)
+	return nil
+}
+
+// deleteKubeBindingCascade removes all derived RBAC objects and tracking relationships for the supplied
+// kubernetes/role_binding resource ID (namespaced or cluster-scoped). It is used by RoleBinding deletion directly
+// and by Role / ClusterRole deletion when they clean up each binding that referenced the role.
+func (m *KubeRbacToKessel) deleteKubeBindingCascade(ctx context.Context, kubeBindingId string) error {
+	log := logf.FromContext(ctx)
+
+	// Step 1: list derived rbac/role_binding objects associated via t_rbac_binding
+	var rbacBindingIds []string
+	if err := streamutil.ForEach(
+		func() (spicedbv1.PermissionsService_ReadRelationshipsClient, error) {
+			return m.SpiceDb.ReadRelationships(ctx, &spicedbv1.ReadRelationshipsRequest{
+				Consistency: fullyConsistent,
+				RelationshipFilter: &spicedbv1.RelationshipFilter{
+					ResourceType:       "kubernetes/role_binding",
+					OptionalResourceId: kubeBindingId,
+					OptionalRelation:   "t_rbac_binding",
+				},
+			})
+		},
+		func(resp *spicedbv1.ReadRelationshipsResponse) error {
+			rbacBindingIds = append(rbacBindingIds, resp.Relationship.Subject.Object.ObjectId)
+			return nil
+		},
+	); err != nil {
+		log.Error(err, "enumerating rbac bindings for kube binding", "kubeBindingId", kubeBindingId)
+		return fmt.Errorf("failed to enumerate rbac bindings for kube binding %s: %w", kubeBindingId, err)
+	}
+
+	// Step 2: remove t_rbac_binding edges on the kube binding itself
+	// This is for the kube binding, so no prefix match is needed.
+	if _, err := m.SpiceDb.DeleteRelationships(ctx, &spicedbv1.DeleteRelationshipsRequest{
+		RelationshipFilter: &spicedbv1.RelationshipFilter{
+			ResourceType:       "kubernetes/role_binding",
+			OptionalResourceId: kubeBindingId,
+			OptionalRelation:   "t_rbac_binding",
+		},
+	}); err != nil {
+		log.Error(err, "deleting t_rbac_binding edges", "kubeBindingId", kubeBindingId)
+		return fmt.Errorf("failed to delete t_rbac_binding edges for %s: %w", kubeBindingId, err)
+	}
+
+	// Step 3: Delete all rbac/role_binding objects with prefix matching this kube binding
+	// The rbac binding IDs are created as: kubeBindingId.WithSegment(ruleIndex)
+	// So we can delete all rbac bindings for this kube binding using prefix matching
+	if _, err := m.SpiceDb.DeleteRelationships(ctx, &spicedbv1.DeleteRelationshipsRequest{
+		RelationshipFilter: &spicedbv1.RelationshipFilter{
+			ResourceType:             "rbac/role_binding",
+			OptionalResourceIdPrefix: kubeBindingId + "/",
+		},
+	}); err != nil {
+		log.Error(err, "deleting derived rbac/role_binding objects", "kubeBindingId", kubeBindingId)
+		return fmt.Errorf("failed to delete derived rbac role bindings for %s: %w", kubeBindingId, err)
+	}
+
+	// Step 4: delete any relationships where those rbacBindingIds are subjects
+	// Since SubjectFilter doesn't support prefix matching, we need to delete them individually
+	for _, rbacBindingId := range rbacBindingIds {
+		if _, err := m.SpiceDb.DeleteRelationships(ctx, &spicedbv1.DeleteRelationshipsRequest{
+			RelationshipFilter: &spicedbv1.RelationshipFilter{
+				OptionalSubjectFilter: &spicedbv1.SubjectFilter{
+					SubjectType:       "rbac/role_binding",
+					OptionalSubjectId: rbacBindingId,
+				},
+			},
+		}); err != nil {
+			log.Error(err, "deleting subject relationships for derived binding", "rbacBindingId", rbacBindingId)
+			return fmt.Errorf("failed to delete subject relationships for rbac binding %s: %w", rbacBindingId, err)
+		}
+	}
+
+	// Step 5: delete t_role_binding edges where this kube binding is the SUBJECT
+	if _, err := m.SpiceDb.DeleteRelationships(ctx, &spicedbv1.DeleteRelationshipsRequest{
+		RelationshipFilter: &spicedbv1.RelationshipFilter{
+			OptionalSubjectFilter: &spicedbv1.SubjectFilter{
+				SubjectType:       "kubernetes/role_binding",
+				OptionalSubjectId: kubeBindingId,
+			},
+		},
+	}); err != nil {
+		log.Error(err, "deleting t_role_binding edges where kube binding is subject", "kubeBindingId", kubeBindingId)
+		return fmt.Errorf("failed to delete t_role_binding edges for %s: %w", kubeBindingId, err)
+	}
+
 	return nil
 }
