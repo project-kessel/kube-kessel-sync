@@ -303,12 +303,12 @@ func TestMapper(t *testing.T) {
 
 			// Verify no relationships remain for the kube binding or rbac bindings
 			// Since this was the only binding, there should be no relationships left
-			kubeBindingCount := countTotalRelationships(t, ctx, spicedb, "kubernetes/role_binding")
+			kubeBindingCount := countTotalRelationshipsFromResource(t, ctx, spicedb, "kubernetes/role_binding")
 			if kubeBindingCount != 0 {
 				t.Errorf("Expected 0 relationships for kubernetes/role_binding after RoleBinding deletion, got %d", kubeBindingCount)
 			}
 
-			rbacBindingCount := countTotalRelationships(t, ctx, spicedb, "rbac/role_binding")
+			rbacBindingCount := countTotalRelationshipsFromResource(t, ctx, spicedb, "rbac/role_binding")
 			if rbacBindingCount != 0 {
 				t.Errorf("Expected 0 relationships for rbac/role_binding after RoleBinding deletion, got %d", rbacBindingCount)
 			}
@@ -804,12 +804,12 @@ func TestMapper(t *testing.T) {
 
 			// Verify no relationships remain for the kube binding or rbac bindings
 			// Since this was the only binding, there should be no relationships left
-			kubeBindingCount := countTotalRelationships(t, ctx, spicedb, "kubernetes/role_binding")
+			kubeBindingCount := countTotalRelationshipsFromResource(t, ctx, spicedb, "kubernetes/role_binding")
 			if kubeBindingCount != 0 {
 				t.Errorf("Expected 0 relationships for kubernetes/role_binding after RoleBinding deletion, got %d", kubeBindingCount)
 			}
 
-			rbacBindingCount := countTotalRelationships(t, ctx, spicedb, "rbac/role_binding")
+			rbacBindingCount := countTotalRelationshipsFromResource(t, ctx, spicedb, "rbac/role_binding")
 			if rbacBindingCount != 0 {
 				t.Errorf("Expected 0 relationships for rbac/role_binding after RoleBinding deletion, got %d", rbacBindingCount)
 			}
@@ -1752,7 +1752,7 @@ func TestMapper(t *testing.T) {
 				"rbac/principal", "kubernetes/user-2")
 
 			for _, rt := range []string{"kubernetes/role", "kubernetes/role_binding", "rbac/role", "rbac/role_binding"} {
-				if c := countTotalRelationships(t, ctx, spicedb, rt); c != 0 {
+				if c := countTotalRelationshipsFromResource(t, ctx, spicedb, rt); c != 0 {
 					t.Errorf("Expected 0 relationships for %s after deletion, got %d", rt, c)
 				}
 			}
@@ -1956,7 +1956,7 @@ func TestMapper(t *testing.T) {
 			// 3. Ensure no relationships remain for the relevant resource types
 			resourceTypes := []string{"kubernetes/role", "kubernetes/role_binding", "rbac/role", "rbac/role_binding", "kubernetes/configmap"}
 			for _, rt := range resourceTypes {
-				if c := countTotalRelationships(t, ctx, spicedb, rt); c != 0 {
+				if c := countTotalRelationshipsFromResource(t, ctx, spicedb, rt); c != 0 {
 					t.Errorf("Expected 0 relationships for %s after clusterrole deletion, got %d", rt, c)
 				}
 			}
@@ -2022,7 +2022,7 @@ func TestMapper(t *testing.T) {
 				"rbac/principal", "kubernetes/user-foobar")
 
 			// Ensure relationships for foobar remain
-			if c := countTotalRelationships(t, ctx, spicedb, "rbac/role"); c == 0 {
+			if c := countTotalRelationshipsFromResource(t, ctx, spicedb, "rbac/role"); c == 0 {
 				t.Errorf("Expected rbac/role relationships for foobar to remain, got 0")
 			}
 		})
@@ -2067,7 +2067,7 @@ func TestMapper(t *testing.T) {
 
 			// Expect zero tuples for these resource types
 			for _, rt := range []string{"kubernetes/role_binding", "rbac/role_binding"} {
-				if c := countTotalRelationships(t, ctx, spicedb, rt); c != 0 {
+				if c := countTotalRelationshipsFromResource(t, ctx, spicedb, rt); c != 0 {
 					t.Errorf("expected 0 relationships for %s after clusterrolebinding deletion, got %d", rt, c)
 				}
 			}
@@ -2163,9 +2163,151 @@ func TestMapper(t *testing.T) {
 				"rbac/principal", "kubernetes/test-user")
 
 			for _, rt := range []string{"kubernetes/role", "kubernetes/role_binding", "rbac/role", "rbac/role_binding"} {
-				if c := countTotalRelationships(t, ctx, spicedb, rt); c != 0 {
+				if c := countTotalRelationshipsFromResource(t, ctx, spicedb, rt); c != 0 {
 					t.Errorf("Expected 0 relationships for %s after deletion, got %d", rt, c)
 				}
+			}
+		})
+
+		// Test that cluster role with resource names for unsupported resource type should be filtered out
+		t.Run("cluster role with resource names for unsupported resource type should be filtered out", func(t *testing.T) {
+			t.Parallel()
+
+			spicedb, kube, k2k := setupTest(ctx, t, port)
+
+			// Create namespaces first
+			testNamespace := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-namespace",
+				},
+			}
+			kube.AddOrReplace(testNamespace)
+			k2k.ObjectAddedOrChanged(ctx, testNamespace)
+
+			// Create ClusterRole with resourceNames for unsupported resource type "secrets"
+			// This should be filtered out just like unsupported permissions are filtered out
+			clusterRole := &rbacv1.ClusterRole{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-cluster-role-secrets",
+				},
+				Rules: []rbacv1.PolicyRule{
+					{
+						APIGroups:     []string{""},
+						Resources:     []string{"secrets"},
+						Verbs:         []string{"get"},
+						ResourceNames: []string{"test-secret"},
+					},
+				},
+			}
+			clusterBinding := &rbacv1.ClusterRoleBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-cluster-binding-secrets",
+				},
+				Subjects: []rbacv1.Subject{
+					{
+						Kind: "User",
+						Name: "test-user",
+					},
+				},
+				RoleRef: rbacv1.RoleRef{
+					APIGroup: rbacv1.GroupName,
+					Kind:     "ClusterRole",
+					Name:     clusterRole.Name,
+				},
+			}
+
+			kube.AddOrReplace(clusterRole)
+			kube.AddOrReplace(clusterBinding)
+
+			// ClusterRole processing should succeed because it doesn't create relationships for unsupported resource types
+			err := k2k.ObjectAddedOrChanged(ctx, clusterRole)
+			if err != nil {
+				t.Errorf("Expected ClusterRole processing to succeed despite unsupported resource type, got error: %v", err)
+			}
+
+			// ClusterRoleBinding processing should succeed and filter out unsupported resource types
+			// just like permissions are filtered out in MapRole/MapClusterRole
+			err = k2k.ObjectAddedOrChanged(ctx, clusterBinding)
+			if err != nil {
+				t.Errorf("Expected ClusterRoleBinding processing to succeed by filtering out unsupported resource types, but got error: %v", err)
+			}
+
+			// Verify that no RBAC roles were created for the unsupported "secrets" resource type
+			rbacRoleCount := countTotalRelationshipsFromResource(t, ctx, spicedb, "rbac/role")
+			if rbacRoleCount != 0 {
+				t.Errorf("Expected 0 relationships for rbac/role after filtering out unsupported resource type, got %d", rbacRoleCount)
+			}
+		})
+
+		// Test that role (namespaced) with resource names for unsupported resource type should be filtered out
+		t.Run("role with resource names for unsupported resource type should be filtered out", func(t *testing.T) {
+			t.Parallel()
+
+			spicedb, kube, k2k := setupTest(ctx, t, port)
+
+			// Create namespace first
+			testNamespace := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-namespace",
+				},
+			}
+			kube.AddOrReplace(testNamespace)
+			k2k.ObjectAddedOrChanged(ctx, testNamespace)
+
+			// Create Role with resourceNames for unsupported resource type "secrets"
+			// This should be filtered out just like unsupported permissions are filtered out
+			role := &rbacv1.Role{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-role-secrets",
+					Namespace: "test-namespace",
+				},
+				Rules: []rbacv1.PolicyRule{
+					{
+						APIGroups:     []string{""},
+						Resources:     []string{"secrets"},
+						Verbs:         []string{"get"},
+						ResourceNames: []string{"test-secret"},
+					},
+				},
+			}
+			roleBinding := &rbacv1.RoleBinding{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-role-binding-secrets",
+					Namespace: "test-namespace",
+				},
+				Subjects: []rbacv1.Subject{
+					{
+						Kind: "User",
+						Name: "test-user",
+					},
+				},
+				RoleRef: rbacv1.RoleRef{
+					APIGroup: rbacv1.GroupName,
+					Kind:     "Role",
+					Name:     role.Name,
+				},
+			}
+
+			kube.AddOrReplace(role)
+			kube.AddOrReplace(roleBinding)
+
+			// Role processing should succeed because it doesn't create relationships for unsupported resource types
+			err := k2k.ObjectAddedOrChanged(ctx, role)
+			if err != nil {
+				t.Errorf("Expected Role processing to succeed despite unsupported resource type, got error: %v", err)
+			}
+
+			// RoleBinding processing should succeed and filter out unsupported resource types
+			// just like permissions are filtered out in MapRole
+			err = k2k.ObjectAddedOrChanged(ctx, roleBinding)
+			if err != nil {
+				t.Errorf("Expected RoleBinding processing to succeed by filtering out unsupported resource types, but got error: %v", err)
+			}
+
+			// Verify that no relationships were created for the unsupported "secrets" resource type
+			rbacRoleCount := countTotalRelationshipsFromResource(t, ctx, spicedb, "rbac/role")
+			if rbacRoleCount != 0 {
+				t.Errorf("Expected 0 relationships for rbac/role with unsupported kubernetes/secret resource type, got %d", rbacRoleCount)
 			}
 		})
 	})
@@ -2213,7 +2355,7 @@ func TestMapper(t *testing.T) {
 			// Verify no relationships remain
 			resourceTypes := []string{"kubernetes/role", "kubernetes/role_binding", "rbac/role", "rbac/role_binding"}
 			for _, rt := range resourceTypes {
-				relationshipCount := countTotalRelationships(t, ctx, spicedb, rt)
+				relationshipCount := countTotalRelationshipsFromResource(t, ctx, spicedb, rt)
 				if relationshipCount != 0 {
 					t.Errorf("Expected 0 relationships for resource type %s after role deletion, got %d", rt, relationshipCount)
 				}
@@ -2263,7 +2405,7 @@ func TestMapper(t *testing.T) {
 			// Verify no relationships remain
 			resourceTypes := []string{"kubernetes/role", "kubernetes/role_binding", "rbac/role", "rbac/role_binding"}
 			for _, rt := range resourceTypes {
-				relationshipCount := countTotalRelationships(t, ctx, spicedb, rt)
+				relationshipCount := countTotalRelationshipsFromResource(t, ctx, spicedb, rt)
 				if relationshipCount != 0 {
 					t.Errorf("Expected 0 relationships for resource type %s after role deletion, got %d", rt, relationshipCount)
 				}
@@ -2332,7 +2474,7 @@ func TestMapper(t *testing.T) {
 			// Verify no relationships remain
 			resourceTypes := []string{"kubernetes/role", "kubernetes/role_binding", "rbac/role", "rbac/role_binding"}
 			for _, rt := range resourceTypes {
-				relationshipCount := countTotalRelationships(t, ctx, spicedb, rt)
+				relationshipCount := countTotalRelationshipsFromResource(t, ctx, spicedb, rt)
 				if relationshipCount != 0 {
 					t.Errorf("Expected 0 relationships for resource type %s after role deletion, got %d", rt, relationshipCount)
 				}
@@ -2478,8 +2620,8 @@ func spicedbTestClient(port string) (*authzed.Client, error) {
 	)
 }
 
-// countTotalRelationships counts the total number of relationships in SpiceDB for a given resource type
-func countTotalRelationships(t *testing.T, ctx context.Context, spicedb *authzed.Client, resourceType string) int {
+// countTotalRelationshipsFromResource counts the total number of relationships in SpiceDB for a given resource type
+func countTotalRelationshipsFromResource(t *testing.T, ctx context.Context, spicedb *authzed.Client, resourceType string) int {
 	t.Helper()
 
 	count := 0

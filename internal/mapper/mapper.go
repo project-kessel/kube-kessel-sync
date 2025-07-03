@@ -91,20 +91,36 @@ func isSupportedPermission(apiGroup, resource, verb string) bool {
 	return ok
 }
 
+// isSupportedResourceType returns true if the supplied apiGroup and resource are currently supported
+// by the mapper for binding relationships. This is used to filter out unsupported resource types
+// when creating denormalized relationships to track resource name bindings.
+func isSupportedResourceType(apiGroup, resource string) bool {
+	// Only the core API group ("" or "core") is supported at the moment.
+	if apiGroup != "" && apiGroup != "core" {
+		return false
+	}
+
+	// Normalize case for comparison.
+	resource = strings.ToLower(resource)
+
+	_, ok := supportedResourceVerbs[resource]
+	return ok
+}
+
 func (m *KubeRbacToKessel) ObjectAddedOrChanged(ctx context.Context, obj client.Object) error {
 	log := logf.FromContext(ctx)
 
 	switch o := obj.(type) {
 	case *rbacv1.Role:
-		m.MapRole(ctx, o)
+		return m.MapRole(ctx, o)
 	case *rbacv1.RoleBinding:
-		m.MapRoleBinding(ctx, o)
+		return m.MapRoleBinding(ctx, o)
 	case *rbacv1.ClusterRole:
-		m.MapClusterRole(ctx, o)
+		return m.MapClusterRole(ctx, o)
 	case *rbacv1.ClusterRoleBinding:
-		m.MapClusterRoleBinding(ctx, o)
+		return m.MapClusterRoleBinding(ctx, o)
 	case *corev1.Namespace:
-		m.MapNamespace(ctx, o)
+		return m.MapNamespace(ctx, o)
 	default:
 		gvk := obj.GetObjectKind().GroupVersionKind()
 		log.Info("Unknown object type",
@@ -476,22 +492,30 @@ func (m *KubeRbacToKessel) getNamespaceBindingUpdates(ctx context.Context, roleR
 		// Decide where to attach the binding based on the rule's ResourceNames.
 		if len(rule.ResourceNames) > 0 {
 			// Resource-level binding.
-			for _, resource := range rule.Resources {
-				for _, resourceName := range rule.ResourceNames {
-					resourceType := fmt.Sprintf("kubernetes/%s", pluralToSingular(resource))
-					resourceId := NewResourceId(m.ClusterId, kubeBindingId.Namespace, resourceName)
+			for _, apiGroup := range rule.APIGroups {
+				for _, resource := range rule.Resources {
+					if !isSupportedResourceType(apiGroup, resource) {
+						// Skip unsupported resource types to avoid creating relationships
+						// for resources not defined in the schema
+						continue
+					}
+					for _, resourceName := range rule.ResourceNames {
+						resourceType := fmt.Sprintf("kubernetes/%s", pluralToSingular(resource))
+						resourceId := NewResourceId(m.ClusterId, kubeBindingId.Namespace, resourceName)
 
-					updates = append(updates, relationshipTouch(&spicedbv1.ObjectReference{
-						ObjectType: resourceType,
-						ObjectId:   resourceId.String(),
-					}, "t_role_binding", &spicedbv1.SubjectReference{
-						Object: &spicedbv1.ObjectReference{
-							ObjectType: "rbac/role_binding",
-							ObjectId:   rbacBindingId,
-						},
-					}))
+						updates = append(updates, relationshipTouch(&spicedbv1.ObjectReference{
+							ObjectType: resourceType,
+							ObjectId:   resourceId.String(),
+						}, "t_role_binding", &spicedbv1.SubjectReference{
+							Object: &spicedbv1.ObjectReference{
+								ObjectType: "rbac/role_binding",
+								ObjectId:   rbacBindingId,
+							},
+						}))
+					}
 				}
 			}
+
 		} else {
 			// Namespace-level binding.
 			resourceType := "kubernetes/knamespace"
@@ -921,35 +945,24 @@ func (m *KubeRbacToKessel) getClusterBindingUpdates(ctx context.Context, cluster
 		if len(rule.ResourceNames) > 0 {
 			// If resource names are specified, create denormalized relationships to track
 			// which specific resources are bound at the cluster level
-			for _, resource := range rule.Resources {
-				for _, resourceName := range rule.ResourceNames {
-					resourceType := fmt.Sprintf("kubernetes/%s", pluralToSingular(resource))
+			for _, apiGroup := range rule.APIGroups {
+				for _, resource := range rule.Resources {
+					if !isSupportedResourceType(apiGroup, resource) {
+						// Skip unsupported resource types to avoid creating relationships
+						// for resources not defined in the schema
+						continue
+					}
+					for _, resourceName := range rule.ResourceNames {
+						resourceType := fmt.Sprintf("kubernetes/%s", pluralToSingular(resource))
 
-					// Create denormalized relationship to track this resource name binding
-					// This is used when namespaces are added,
-					// so that we can easily lookup what resources to bind to in that namespace.
-					// Use empty namespace to indicate cluster-level resource name binding
-					resourceId := NewResourceId(m.ClusterId, "", resourceName)
-					updates = append(updates, relationshipTouch(&spicedbv1.ObjectReference{
-						ObjectType: resourceType,
-						ObjectId:   resourceId.String(),
-					}, "t_role_binding", &spicedbv1.SubjectReference{
-						Object: &spicedbv1.ObjectReference{
-							ObjectType: "rbac/role_binding",
-							ObjectId:   rbacBindingId,
-						},
-					}))
-
-					// Create resource-level bindings for each existing namespace
-					for _, namespace := range namespaces {
-						// Create namespace-specific resource ID
-						namespaceResourceId := NewResourceId(m.ClusterId, namespace, resourceName)
-
-						// Create a relationship from the namespace-specific resource to the role binding
-						// This is what grants access to the specific resource in this namespace
+						// Create denormalized relationship to track this resource name binding
+						// This is used when namespaces are added,
+						// so that we can easily lookup what resources to bind to in that namespace.
+						// Use empty namespace to indicate cluster-level resource name binding
+						resourceId := NewResourceId(m.ClusterId, "", resourceName)
 						updates = append(updates, relationshipTouch(&spicedbv1.ObjectReference{
 							ObjectType: resourceType,
-							ObjectId:   namespaceResourceId.String(),
+							ObjectId:   resourceId.String(),
 						}, "t_role_binding", &spicedbv1.SubjectReference{
 							Object: &spicedbv1.ObjectReference{
 								ObjectType: "rbac/role_binding",
@@ -957,10 +970,29 @@ func (m *KubeRbacToKessel) getClusterBindingUpdates(ctx context.Context, cluster
 							},
 						}))
 
-						log.Info("Created resource-level binding", "resourceType", resourceType, "resourceId", namespaceResourceId.String(), "bindingId", rbacBindingId, "namespace", namespace)
+						// Create resource-level bindings for each existing namespace
+						for _, namespace := range namespaces {
+							// Create namespace-specific resource ID
+							namespaceResourceId := NewResourceId(m.ClusterId, namespace, resourceName)
+
+							// Create a relationship from the namespace-specific resource to the role binding
+							// This is what grants access to the specific resource in this namespace
+							updates = append(updates, relationshipTouch(&spicedbv1.ObjectReference{
+								ObjectType: resourceType,
+								ObjectId:   namespaceResourceId.String(),
+							}, "t_role_binding", &spicedbv1.SubjectReference{
+								Object: &spicedbv1.ObjectReference{
+									ObjectType: "rbac/role_binding",
+									ObjectId:   rbacBindingId,
+								},
+							}))
+
+							log.Info("Created resource-level binding", "resourceType", resourceType, "resourceId", namespaceResourceId.String(), "bindingId", rbacBindingId, "namespace", namespace)
+						}
 					}
 				}
 			}
+
 		} else {
 			// If no resource names, bind to the cluster level (grants access to all resources of the specified type)
 			resourceType := "kubernetes/cluster"
