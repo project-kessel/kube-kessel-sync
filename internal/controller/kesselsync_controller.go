@@ -22,6 +22,7 @@ import (
 	sink "github.com/project-kessel/kube-kessel-sync/internal/sink"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/workqueue"
@@ -52,7 +53,7 @@ func (r *KesselSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		r.lastData = make(map[types.UID]client.Object)
 	}
 
-	created := []client.Object{}
+	// Store true if object is different from lastData, false if it is the same
 	foundUids := make(map[types.UID]bool)
 
 	// Fetch all roles
@@ -62,11 +63,15 @@ func (r *KesselSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, err
 	}
 	for _, role := range allRoleExistingList.Items {
-		foundUids[role.UID] = true
-		if _, ok := r.lastData[role.UID]; !ok {
-			r.lastData[role.UID] = role.DeepCopy()
-			created = append(created, role.DeepCopy())
+		if data, ok := r.lastData[role.UID]; ok {
+			// If the object is in lastData, check if it has changed
+			// true if changed, false if not
+			foundUids[role.UID] = !equality.Semantic.DeepEqual(&role, data)
+		} else {
+			// If the object is not in lastData, it is new
+			foundUids[role.UID] = true
 		}
+		r.lastData[role.UID] = role.DeepCopy()
 	}
 
 	// Fetch all rolebindings
@@ -76,11 +81,12 @@ func (r *KesselSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, err
 	}
 	for _, roleBinding := range allRoleBindingExistingList.Items {
-		foundUids[roleBinding.UID] = true
-		if _, ok := r.lastData[roleBinding.UID]; !ok {
-			r.lastData[roleBinding.UID] = roleBinding.DeepCopy()
-			created = append(created, roleBinding.DeepCopy())
+		if data, ok := r.lastData[roleBinding.UID]; ok {
+			foundUids[roleBinding.UID] = !equality.Semantic.DeepEqual(&roleBinding, data)
+		} else {
+			foundUids[roleBinding.UID] = true
 		}
+		r.lastData[roleBinding.UID] = roleBinding.DeepCopy()
 	}
 
 	// Fetch all clusterroles
@@ -90,11 +96,12 @@ func (r *KesselSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, err
 	}
 	for _, clusterRole := range allClusterRoleExistingList.Items {
-		foundUids[clusterRole.UID] = true
-		if _, ok := r.lastData[clusterRole.UID]; !ok {
-			r.lastData[clusterRole.UID] = clusterRole.DeepCopy()
-			created = append(created, clusterRole.DeepCopy())
+		if data, ok := r.lastData[clusterRole.UID]; ok {
+			foundUids[clusterRole.UID] = !equality.Semantic.DeepEqual(&clusterRole, data)
+		} else {
+			foundUids[clusterRole.UID] = true
 		}
+		r.lastData[clusterRole.UID] = clusterRole.DeepCopy()
 	}
 
 	// Fetch all clusterrolebindings
@@ -104,11 +111,12 @@ func (r *KesselSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, err
 	}
 	for _, clusterRoleBinding := range allClusterRoleBindingExistingList.Items {
-		foundUids[clusterRoleBinding.UID] = true
-		if _, ok := r.lastData[clusterRoleBinding.UID]; !ok {
-			r.lastData[clusterRoleBinding.UID] = clusterRoleBinding.DeepCopy()
-			created = append(created, clusterRoleBinding.DeepCopy())
+		if data, ok := r.lastData[clusterRoleBinding.UID]; ok {
+			foundUids[clusterRoleBinding.UID] = !equality.Semantic.DeepEqual(&clusterRoleBinding, data)
+		} else {
+			foundUids[clusterRoleBinding.UID] = true
 		}
+		r.lastData[clusterRoleBinding.UID] = clusterRoleBinding.DeepCopy()
 	}
 
 	// Fetch all namespaces
@@ -118,21 +126,21 @@ func (r *KesselSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, err
 	}
 	for _, namespace := range allNamespaceExistingList.Items {
-		foundUids[namespace.UID] = true
-		if _, ok := r.lastData[namespace.UID]; !ok {
-			r.lastData[namespace.UID] = namespace.DeepCopy()
-			created = append(created, namespace.DeepCopy())
+		if data, ok := r.lastData[namespace.UID]; ok {
+			foundUids[namespace.UID] = !equality.Semantic.DeepEqual(&namespace, data)
+		} else {
+			foundUids[namespace.UID] = true
 		}
+		r.lastData[namespace.UID] = namespace.DeepCopy()
 	}
 
-	// Post all created objects
-	for _, obj := range created {
-		r.Sink.ObjectAddedOrChanged(ctx, obj)
-	}
-
-	// Remove objects that are no longer present
+	// Post all objects based on whether they've been updated or deleted
 	for uid, obj := range r.lastData {
-		if !foundUids[uid] {
+		if changed, ok := foundUids[uid]; ok {
+			if changed {
+				r.Sink.ObjectAddedOrChanged(ctx, obj)
+			}
+		} else {
 			if err := r.Sink.ObjectDeleted(ctx, obj); err != nil {
 				// Log the error but keep trying
 				log.Error(err, "Failed to post delete object")
@@ -144,23 +152,6 @@ func (r *KesselSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	return ctrl.Result{}, nil
-}
-
-func (r *KesselSyncReconciler) WhatChanged(ctx context.Context, obj client.Object) (client.Object, client.Object, error) {
-	log := logf.FromContext(ctx)
-
-	// Naive implementation of diffing just returns the old object
-	// Essentially says, "everything was removed, and this is new"
-	// It at least helps us be able to see what was there before.
-
-	// Check if the object is already in lastData
-	if existingObj, found := r.lastData[obj.GetUID()]; found {
-		log.Info("Object found in lastData", "kind", obj.GetObjectKind().GroupVersionKind().Kind, "name", obj.GetName())
-		return existingObj, obj, nil
-	}
-
-	log.Info("Object not found in lastData, treating as new", "kind", obj.GetObjectKind().GroupVersionKind().Kind, "name", obj.GetName())
-	return nil, obj, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.

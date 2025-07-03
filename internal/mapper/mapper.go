@@ -848,6 +848,8 @@ func permissionToTuple(apiGroup string, resource string, verb string, roleId str
 }
 
 // pluralToSingular converts common Kubernetes plural resource names to singular
+// TODO: also just consider a 1-1 mapping of resource types to kessel resource types
+// or an aliasing feature, w/e
 func pluralToSingular(resource string) string {
 	switch resource {
 	case "configmaps":
