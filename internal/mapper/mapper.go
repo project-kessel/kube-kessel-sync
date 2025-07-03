@@ -304,7 +304,7 @@ func (m *KubeRbacToKessel) MapRole(ctx context.Context, role *rbacv1.Role) error
 			Updates: updates,
 		})
 		if err != nil {
-			log.Error(err, "Failed to write relationships to SpiceDB")
+			log.Error(err, "Failed to write relationships to SpiceDB", "updates", updates)
 			return err
 		}
 	}
@@ -407,7 +407,7 @@ func (m *KubeRbacToKessel) MapRoleBinding(ctx context.Context, binding *rbacv1.R
 			Updates: updates,
 		})
 		if err != nil {
-			log.Error(err, "Failed to write relationships to SpiceDB for RoleBinding", "name", binding.Name, "namespace", binding.Namespace)
+			log.Error(err, "Failed to write relationships to SpiceDB for RoleBinding", "name", binding.Name, "namespace", binding.Namespace, "updates", updates)
 			return fmt.Errorf("failed to write relationships to SpiceDB for RoleBinding %s/%s: %w", binding.Namespace, binding.Name, err)
 		}
 		log.Info("Successfully wrote RoleBinding relationships to SpiceDB", "name", binding.Name, "namespace", binding.Namespace)
@@ -424,6 +424,10 @@ func (m *KubeRbacToKessel) MapRoleBinding(ctx context.Context, binding *rbacv1.R
 func (m *KubeRbacToKessel) convertSubjectsToPrincipalIds(subjects []rbacv1.Subject) []string {
 	principalIds := make([]string, 0, len(subjects))
 	for _, subject := range subjects {
+		if strings.EqualFold(subject.Kind, "Group") {
+			logf.Log.Info("Skipping group subject", "name", subject.Name)
+			continue
+		}
 		// TODO: rethink principal identifiers for kubernetes principals
 		principalId := fmt.Sprintf("kubernetes/%s", subject.Name)
 		principalIds = append(principalIds, principalId)
@@ -438,6 +442,18 @@ func (m *KubeRbacToKessel) getNamespaceBindingUpdates(ctx context.Context, roleR
 	log := logf.FromContext(ctx)
 
 	updates := []*spicedbv1.RelationshipUpdate{}
+
+	// Track from the kube role to the binding so we can traverse later.
+	// This is so we can traverse from the kube role to rbac bindings later.
+	updates = append(updates, relationshipTouch(&spicedbv1.ObjectReference{
+		ObjectType: "kubernetes/role",
+		ObjectId:   roleResourceId.String(),
+	}, "t_role_binding", &spicedbv1.SubjectReference{
+		Object: &spicedbv1.ObjectReference{
+			ObjectType: "kubernetes/role_binding",
+			ObjectId:   kubeBindingId.String(),
+		},
+	}))
 
 	// For each rule, create a binding to the RBAC role-rule and attach subjects.
 	for rI, rule := range rules {
@@ -454,17 +470,6 @@ func (m *KubeRbacToKessel) getNamespaceBindingUpdates(ctx context.Context, roleR
 			Object: &spicedbv1.ObjectReference{
 				ObjectType: "rbac/role_binding",
 				ObjectId:   rbacBindingId,
-			},
-		}))
-
-		// Track from the kube role to the binding so we can traverse later.
-		updates = append(updates, relationshipTouch(&spicedbv1.ObjectReference{
-			ObjectType: "kubernetes/role",
-			ObjectId:   roleResourceId.String(),
-		}, "t_role_binding", &spicedbv1.SubjectReference{
-			Object: &spicedbv1.ObjectReference{
-				ObjectType: "kubernetes/role_binding",
-				ObjectId:   kubeBindingId.String(),
 			},
 		}))
 
@@ -666,7 +671,7 @@ func (m *KubeRbacToKessel) MapClusterRole(ctx context.Context, clusterRole *rbac
 			Updates: updates,
 		})
 		if err != nil {
-			log.Error(err, "Failed to write relationships to SpiceDB")
+			log.Error(err, "Failed to write relationships to SpiceDB", "updates", updates)
 			return err
 		}
 	}
@@ -711,7 +716,7 @@ func (m *KubeRbacToKessel) MapClusterRoleBinding(ctx context.Context, clusterRol
 			Updates: updates,
 		})
 		if err != nil {
-			log.Error(err, "Failed to write relationships to SpiceDB for ClusterRoleBinding", "name", clusterRoleBinding.Name)
+			log.Error(err, "Failed to write relationships to SpiceDB for ClusterRoleBinding", "name", clusterRoleBinding.Name, "updates", updates)
 			return fmt.Errorf("failed to write relationships to SpiceDB for ClusterRoleBinding %s: %w", clusterRoleBinding.Name, err)
 		}
 		log.Info("Successfully wrote ClusterRoleBinding relationships to SpiceDB", "name", clusterRoleBinding.Name)
@@ -866,6 +871,18 @@ func (m *KubeRbacToKessel) getClusterBindingUpdates(ctx context.Context, cluster
 	roleResourceId := NewClusterResourceId(m.ClusterId, clusterRole.Name)
 	updates := []*spicedbv1.RelationshipUpdate{}
 
+	// Track from the kube role to the kube binding ONCE to avoid duplicate relationships added per rule.
+	// This is so we can traverse from the kube role to rbac bindings
+	updates = append(updates, relationshipTouch(&spicedbv1.ObjectReference{
+		ObjectType: "kubernetes/role",
+		ObjectId:   roleResourceId.String(),
+	}, "t_role_binding", &spicedbv1.SubjectReference{
+		Object: &spicedbv1.ObjectReference{
+			ObjectType: "kubernetes/role_binding",
+			ObjectId:   kubeBindingId.String(),
+		},
+	}))
+
 	// Get all existing namespaces once if we need them for resource name bindings
 	var namespaces []string
 	var err error
@@ -897,18 +914,6 @@ func (m *KubeRbacToKessel) getClusterBindingUpdates(ctx context.Context, cluster
 			Object: &spicedbv1.ObjectReference{
 				ObjectType: "rbac/role_binding",
 				ObjectId:   rbacBindingId,
-			},
-		}))
-
-		// Now also track from the kube role to the binding,
-		// so we can traverse from the kube role to rbac bindings
-		updates = append(updates, relationshipTouch(&spicedbv1.ObjectReference{
-			ObjectType: "kubernetes/role",
-			ObjectId:   roleResourceId.String(),
-		}, "t_role_binding", &spicedbv1.SubjectReference{
-			Object: &spicedbv1.ObjectReference{
-				ObjectType: "kubernetes/role_binding",
-				ObjectId:   kubeBindingId.String(),
 			},
 		}))
 
@@ -1103,7 +1108,7 @@ func (m *KubeRbacToKessel) MapNamespace(ctx context.Context, namespace *corev1.N
 			Updates: updates,
 		})
 		if err != nil {
-			log.Error(err, "Failed to write namespace relationships to SpiceDB")
+			log.Error(err, "Failed to write namespace relationships to SpiceDB", "updates", updates)
 			return err
 		}
 		log.Info("Successfully wrote namespace relationships to SpiceDB", "name", namespace.Name)
