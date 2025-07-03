@@ -38,7 +38,7 @@ func (r *ResourceId) GetName() string {
 
 // String returns the full resource ID in the format cluster/namespace/name (namespace may be empty for cluster-scoped resources)
 func (r *ResourceId) String() string {
-	return fmt.Sprintf("%s/%s/%s", encodeSegment(r.Cluster), encodeSegment(r.Namespace), encodeSegment(r.Name))
+	return fmt.Sprintf("%s/%s/%s", EncodeSegment(r.Cluster), EncodeSegment(r.Namespace), EncodeSegment(r.Name))
 }
 
 // WithSegment extends the resource ID with an additional segment
@@ -91,15 +91,15 @@ func NewResourceIdFromString(resourceIdStr string) (*ResourceId, error) {
 		return nil, fmt.Errorf("resource ID %q has %d parts; expected at least 3", resourceIdStr, len(parts))
 	}
 
-	cluster, err := decodeSegment(parts[0])
+	cluster, err := DecodeSegment(parts[0])
 	if err != nil {
 		return nil, err
 	}
-	namespace, err := decodeSegment(parts[1])
+	namespace, err := DecodeSegment(parts[1])
 	if err != nil {
 		return nil, err
 	}
-	name, err := decodeSegment(parts[2])
+	name, err := DecodeSegment(parts[2])
 	if err != nil {
 		return nil, err
 	}
@@ -146,8 +146,8 @@ func isSafe(b byte) bool {
 	}
 }
 
-// encodeSegment escapes a single path segment to satisfy SpiceDB rules.
-func encodeSegment(s string) string {
+// EncodeSegment escapes a single path segment to satisfy SpiceDB rules.
+func EncodeSegment(s string) string {
 	var b strings.Builder
 	for i := 0; i < len(s); i++ {
 		c := s[i]
@@ -161,8 +161,8 @@ func encodeSegment(s string) string {
 	return b.String()
 }
 
-// decodeSegment performs the inverse of encodeSegment.
-func decodeSegment(enc string) (string, error) {
+// DecodeSegment performs the inverse of EncodeSegment.
+func DecodeSegment(enc string) (string, error) {
 	var b strings.Builder
 	for i := 0; i < len(enc); i++ {
 		if enc[i] == '=' {

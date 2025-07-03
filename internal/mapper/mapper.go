@@ -363,7 +363,8 @@ func (m *KubeRbacToKessel) getRbacBindingSubjects(ctx context.Context, bindingId
 			})
 		},
 		func(response *spicedbv1.ReadRelationshipsResponse) error {
-			// TODO: assumes subjects are principals, but could be groups
+			// TODO: for now we know these are only principals, in future could be groups
+			// may also need special handling for service accounts vs users.
 			subjects = append(subjects, response.Relationship.Subject.Object.ObjectId)
 			return nil
 		},
@@ -445,7 +446,7 @@ func (m *KubeRbacToKessel) convertSubjectsToPrincipalIds(subjects []rbacv1.Subje
 			continue
 		}
 		// TODO: rethink principal identifiers for kubernetes principals
-		principalId := fmt.Sprintf("kubernetes/%s", subject.Name)
+		principalId := fmt.Sprintf("kubernetes/%s", EncodeSegment(subject.Name))
 		principalIds = append(principalIds, principalId)
 	}
 	return principalIds

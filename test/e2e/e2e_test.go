@@ -388,7 +388,7 @@ roleRef:
 
 				By("starting port-forward to SpiceDB")
 				ctxPF, cancelPF := context.WithCancel(context.Background())
-				pfCmd := exec.CommandContext(ctxPF, "kubectl", "-n", spiceDbNs, "port-forward", fmt.Sprintf("deploy/%s", spiceDbClusterName), fmt.Sprintf("%s:50051", pfLocalPort))
+				pfCmd := exec.CommandContext(ctxPF, "kubectl", "-n", spiceDbNs, "port-forward", fmt.Sprintf("deploy/%s-spicedb", spiceDbClusterName), fmt.Sprintf("%s:50051", pfLocalPort))
 				pfCmd.Stdout = GinkgoWriter
 				pfCmd.Stderr = GinkgoWriter
 				Expect(pfCmd.Start()).To(Succeed(), "failed to start port-forward")
