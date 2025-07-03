@@ -2232,11 +2232,51 @@ func TestMapper(t *testing.T) {
 				t.Errorf("Expected ClusterRoleBinding processing to succeed by filtering out unsupported resource types, but got error: %v", err)
 			}
 
-			// Verify that no RBAC roles were created for the unsupported "secrets" resource type
-			rbacRoleCount := countTotalRelationshipsFromResource(t, ctx, spicedb, "rbac/role")
-			if rbacRoleCount != 0 {
-				t.Errorf("Expected 0 relationships for rbac/role after filtering out unsupported resource type, got %d", rbacRoleCount)
+			// Verify that no RBAC bindings were created for the unsupported "secrets" resource type
+			rbacBindingCount := countTotalRelationshipsForSubject(t, ctx, spicedb, "rbac/role_binding", "")
+			if rbacBindingCount != 1 {
+				t.Errorf("Expected 1 relationships for rbac/role_binding after filtering out unsupported resource type, got %d", rbacBindingCount)
 			}
+
+			// Verify that the 1 relationship is the tracking relationship from kube role binding to rbac role binding
+			var foundRelationship *v1.Relationship
+			err = streamutil.ForEach(
+				func() (v1.PermissionsService_ReadRelationshipsClient, error) {
+					return spicedb.ReadRelationships(ctx, &v1.ReadRelationshipsRequest{
+						Consistency: &v1.Consistency{
+							Requirement: &v1.Consistency_FullyConsistent{FullyConsistent: true},
+						},
+						RelationshipFilter: &v1.RelationshipFilter{
+							OptionalSubjectFilter: &v1.SubjectFilter{
+								SubjectType: "rbac/role_binding",
+							},
+						},
+					})
+				},
+				func(response *v1.ReadRelationshipsResponse) error {
+					foundRelationship = response.Relationship
+					return nil
+				},
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if foundRelationship == nil {
+				t.Error("Expected to find a relationship with rbac/role_binding as subject")
+			} else {
+				// Verify it's a tracking relationship from kubernetes/role_binding to rbac/role_binding
+				if foundRelationship.Resource.ObjectType != "kubernetes/role_binding" {
+					t.Errorf("Expected relationship resource type to be kubernetes/role_binding, got %s", foundRelationship.Resource.ObjectType)
+				}
+				if foundRelationship.Subject.Object.ObjectType != "rbac/role_binding" {
+					t.Errorf("Expected relationship subject type to be rbac/role_binding, got %s", foundRelationship.Subject.Object.ObjectType)
+				}
+				if foundRelationship.Relation != "t_rbac_binding" {
+					t.Errorf("Expected relationship relation to be 't_rbac_binding', got %s", foundRelationship.Relation)
+				}
+			}
+
 		})
 
 		// Test that role (namespaced) with resource names for unsupported resource type should be filtered out
@@ -2304,10 +2344,49 @@ func TestMapper(t *testing.T) {
 				t.Errorf("Expected RoleBinding processing to succeed by filtering out unsupported resource types, but got error: %v", err)
 			}
 
-			// Verify that no relationships were created for the unsupported "secrets" resource type
-			rbacRoleCount := countTotalRelationshipsFromResource(t, ctx, spicedb, "rbac/role")
-			if rbacRoleCount != 0 {
-				t.Errorf("Expected 0 relationships for rbac/role with unsupported kubernetes/secret resource type, got %d", rbacRoleCount)
+			// However, there should still be 1 rbac/role_binding relationship (the tracking relationship)
+			rbacBindingCount := countTotalRelationshipsForSubject(t, ctx, spicedb, "rbac/role_binding", "")
+			if rbacBindingCount != 1 {
+				t.Errorf("Expected 1 relationship for rbac/role_binding tracking relationship after filtering out unsupported resource type, got %d", rbacBindingCount)
+			}
+
+			// Verify that the 1 relationship is the tracking relationship from kube role binding to rbac role binding
+			var foundRelationship *v1.Relationship
+			err = streamutil.ForEach(
+				func() (v1.PermissionsService_ReadRelationshipsClient, error) {
+					return spicedb.ReadRelationships(ctx, &v1.ReadRelationshipsRequest{
+						Consistency: &v1.Consistency{
+							Requirement: &v1.Consistency_FullyConsistent{FullyConsistent: true},
+						},
+						RelationshipFilter: &v1.RelationshipFilter{
+							OptionalSubjectFilter: &v1.SubjectFilter{
+								SubjectType: "rbac/role_binding",
+							},
+						},
+					})
+				},
+				func(response *v1.ReadRelationshipsResponse) error {
+					foundRelationship = response.Relationship
+					return nil
+				},
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if foundRelationship == nil {
+				t.Error("Expected to find a relationship with rbac/role_binding as subject")
+			} else {
+				// Verify it's a tracking relationship from kubernetes/role_binding to rbac/role_binding
+				if foundRelationship.Resource.ObjectType != "kubernetes/role_binding" {
+					t.Errorf("Expected relationship resource type to be kubernetes/role_binding, got %s", foundRelationship.Resource.ObjectType)
+				}
+				if foundRelationship.Subject.Object.ObjectType != "rbac/role_binding" {
+					t.Errorf("Expected relationship subject type to be rbac/role_binding, got %s", foundRelationship.Subject.Object.ObjectType)
+				}
+				if foundRelationship.Relation != "t_rbac_binding" {
+					t.Errorf("Expected relationship relation to be 't_rbac_binding', got %s", foundRelationship.Relation)
+				}
 			}
 		})
 	})
@@ -2644,5 +2723,40 @@ func countTotalRelationshipsFromResource(t *testing.T, ctx context.Context, spic
 	if err != nil {
 		t.Fatal(err)
 	}
+	return count
+}
+
+// countTotalRelationshipsForSubject counts the total number of relationships in SpiceDB for a given subject type
+// and optionally filters by subject object ID if provided (empty string means no filter)
+func countTotalRelationshipsForSubject(t *testing.T, ctx context.Context, spicedb *authzed.Client, subjectType string, optionalSubjectId string) int {
+	t.Helper()
+
+	subjectFilter := &v1.SubjectFilter{
+		SubjectType:       subjectType,
+		OptionalSubjectId: optionalSubjectId,
+	}
+
+	count := 0
+	err := streamutil.ForEach(
+		func() (v1.PermissionsService_ReadRelationshipsClient, error) {
+			return spicedb.ReadRelationships(ctx, &v1.ReadRelationshipsRequest{
+				Consistency: &v1.Consistency{
+					Requirement: &v1.Consistency_FullyConsistent{FullyConsistent: true},
+				},
+				RelationshipFilter: &v1.RelationshipFilter{
+					OptionalSubjectFilter: subjectFilter,
+				},
+			})
+		},
+		func(response *v1.ReadRelationshipsResponse) error {
+			count++
+			t.Logf("Found relationship: %s", response.Relationship)
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	return count
 }
