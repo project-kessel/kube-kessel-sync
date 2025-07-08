@@ -12,12 +12,14 @@ definition kubernetes/cluster {
 }
 
 definition kubernetes/configmap {
-	permission get = t_role_binding->kubernetes_configmaps_get + t_knamespace->configmaps_get
+	permission get = t_role_binding->kubernetes_configmaps_get + t_knamespace->configmaps_get + t_resourcename->configmaps_get
 	permission knamespace = t_knamespace
 	relation t_knamespace: kubernetes/knamespace
+	permission resourcename = t_resourcename
+	relation t_resourcename: kubernetes/resourcename
 	permission role_binding = t_role_binding
 	relation t_role_binding: rbac/role_binding
-	permission update = t_role_binding->kubernetes_configmaps_update + t_knamespace->configmaps_update
+	permission update = t_role_binding->kubernetes_configmaps_update + t_knamespace->configmaps_update + t_resourcename->configmaps_update
 }
 
 definition kubernetes/knamespace {
@@ -36,12 +38,25 @@ definition kubernetes/knamespace {
 }
 
 definition kubernetes/pod {
-	permission get = t_role_binding->kubernetes_pods_get + t_knamespace->pods_get
+	permission get = t_role_binding->kubernetes_pods_get + t_knamespace->pods_get + t_resourcename->pods_get
 	permission knamespace = t_knamespace
 	relation t_knamespace: kubernetes/knamespace
+	permission resourcename = t_resourcename
+	relation t_resourcename: kubernetes/resourcename
 	permission role_binding = t_role_binding
 	relation t_role_binding: rbac/role_binding
-	permission update = t_role_binding->kubernetes_pods_update + t_knamespace->pods_update
+	permission update = t_role_binding->kubernetes_pods_update + t_knamespace->pods_update + t_resourcename->pods_update
+}
+
+definition kubernetes/resourcename {
+	permission configmaps_get = t_role_binding->kubernetes_configmaps_get
+	permission configmaps_list = t_role_binding->kubernetes_configmaps_list
+	permission configmaps_update = t_role_binding->kubernetes_configmaps_update
+	permission pods_get = t_role_binding->kubernetes_pods_get
+	permission pods_list = t_role_binding->kubernetes_pods_list
+	permission pods_update = t_role_binding->kubernetes_pods_update
+	permission role_binding = t_role_binding
+	relation t_role_binding: rbac/role_binding
 }
 
 definition kubernetes/role {

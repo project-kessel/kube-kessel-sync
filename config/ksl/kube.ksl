@@ -38,18 +38,20 @@ type knamespace {
 
 type configmap {
     relation knamespace: [ExactlyOne knamespace]
+    relation resourcename: [ExactlyOne resourcename]
     relation role_binding: [Any rbac.role_binding]
 
-    relation get: role_binding.kubernetes_configmaps_get or knamespace.configmaps_get
-    relation update: role_binding.kubernetes_configmaps_update or knamespace.configmaps_update
+    relation get: role_binding.kubernetes_configmaps_get or knamespace.configmaps_get or resourcename.configmaps_get
+    relation update: role_binding.kubernetes_configmaps_update or knamespace.configmaps_update or resourcename.configmaps_update
 }
 
 type pod {
     relation knamespace: [ExactlyOne knamespace]
+    relation resourcename: [ExactlyOne resourcename]
     relation role_binding: [Any rbac.role_binding]
 
-    relation get: role_binding.kubernetes_pods_get or knamespace.pods_get
-    relation update: role_binding.kubernetes_pods_update or knamespace.pods_update
+    relation get: role_binding.kubernetes_pods_get or knamespace.pods_get or resourcename.pods_get
+    relation update: role_binding.kubernetes_pods_update or knamespace.pods_update or resourcename.pods_update
 }
 
 // Relationships needed to retrive objects during role or binding updates.
@@ -60,4 +62,16 @@ type role_binding {
 type role {
     relation role_binding: [Any role_binding]
     relation rbac_binding: role_binding.rbac_binding
+}
+
+type resourcename {
+    relation role_binding: [Any rbac.role_binding]
+
+    relation configmaps_get: role_binding.kubernetes_configmaps_get
+    relation configmaps_update: role_binding.kubernetes_configmaps_update
+    relation configmaps_list: role_binding.kubernetes_configmaps_list
+
+    relation pods_get: role_binding.kubernetes_pods_get
+    relation pods_update: role_binding.kubernetes_pods_update
+    relation pods_list: role_binding.kubernetes_pods_list
 }
