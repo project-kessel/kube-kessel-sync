@@ -103,7 +103,7 @@ func TestKesselSyncReconciler(t *testing.T) {
 	// 3. Modify the role (add a verb) and update the fake client.
 	updatedRole := role.DeepCopy()
 	updatedRole.Rules[0].Verbs = append(updatedRole.Rules[0].Verbs, "list")
-	if err := reconciler.Client.Update(ctx, updatedRole); err != nil {
+	if err := reconciler.Update(ctx, updatedRole); err != nil {
 		t.Fatalf("failed to update role in fake client: %v", err)
 	}
 

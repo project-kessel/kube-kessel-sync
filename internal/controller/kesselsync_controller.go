@@ -58,7 +58,7 @@ func (r *KesselSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	// Fetch all roles
 	allRoleExistingList := &rbacv1.RoleList{}
-	if err := r.Client.List(ctx, allRoleExistingList); err != nil {
+	if err := r.List(ctx, allRoleExistingList); err != nil {
 		log.Error(err, "Failed to list Roles")
 		return ctrl.Result{}, err
 	}
@@ -76,7 +76,7 @@ func (r *KesselSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	// Fetch all rolebindings
 	allRoleBindingExistingList := &rbacv1.RoleBindingList{}
-	if err := r.Client.List(ctx, allRoleBindingExistingList); err != nil {
+	if err := r.List(ctx, allRoleBindingExistingList); err != nil {
 		log.Error(err, "Failed to list RoleBindings")
 		return ctrl.Result{}, err
 	}
@@ -91,7 +91,7 @@ func (r *KesselSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	// Fetch all clusterroles
 	allClusterRoleExistingList := &rbacv1.ClusterRoleList{}
-	if err := r.Client.List(ctx, allClusterRoleExistingList); err != nil {
+	if err := r.List(ctx, allClusterRoleExistingList); err != nil {
 		log.Error(err, "Failed to list ClusterRoles")
 		return ctrl.Result{}, err
 	}
@@ -106,7 +106,7 @@ func (r *KesselSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	// Fetch all clusterrolebindings
 	allClusterRoleBindingExistingList := &rbacv1.ClusterRoleBindingList{}
-	if err := r.Client.List(ctx, allClusterRoleBindingExistingList); err != nil {
+	if err := r.List(ctx, allClusterRoleBindingExistingList); err != nil {
 		log.Error(err, "Failed to list RoleBindings")
 		return ctrl.Result{}, err
 	}
@@ -121,7 +121,7 @@ func (r *KesselSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	// Fetch all namespaces
 	allNamespaceExistingList := &corev1.NamespaceList{}
-	if err := r.Client.List(ctx, allNamespaceExistingList); err != nil {
+	if err := r.List(ctx, allNamespaceExistingList); err != nil {
 		log.Error(err, "Failed to list Namespaces")
 		return ctrl.Result{}, err
 	}
