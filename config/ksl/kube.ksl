@@ -4,6 +4,7 @@ namespace kubernetes
 import rbac
 
 // This would be templated using ksl intermediate representation based on kinds deployed
+// We could also consider using a generic "resource" type instead of a type per kind.
 
 @rbac.add_v2_permission(app:'kubernetes', resource:'pods', verb:'get')
 @rbac.add_v2_permission(app:'kubernetes', resource:'pods', verb:'list')
